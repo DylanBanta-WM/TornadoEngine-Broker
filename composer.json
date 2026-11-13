@@ -1,0 +1,29 @@
+{
+    "name": "tornado-engine/broker",
+    "description": "Tornado Engine module: lets Claude work with directory data through pseudonyms, so no student information reaches it.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4",
+        "illuminate/support": "^13.0",
+        "laravel/mcp": "^1.1.2",
+        "tornado-engine/gam": ">=0.3",
+        "tornado-engine/cron": ">=0.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "TornadoEngine\\Broker\\": "src/"
+        }
+    },
+    "extra": {
+        "tornado": {
+            "name": "Broker",
+            "core": ">=0.5",
+            "core-module": false,
+            "provider": "TornadoEngine\\Broker\\BrokerServiceProvider"
+        },
+        "branch-alias": {
+            "dev-main": "0.1.x-dev"
+        }
+    }
+}
