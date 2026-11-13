@@ -65,7 +65,11 @@ class BrokerController extends Controller
     public function refresh(Cron $cron, Directory $directory): RedirectResponse
     {
         $job = $cron->find('broker.refresh');
-        $ok = $cron->run($job);
+        $ok = $cron->run($job, wait: false);
+
+        if ($ok === null) {
+            return back()->withErrors(['broker' => __('Another scheduled job is running. Jobs run one at a time, so try again when it finishes.')]);
+        }
 
         $message = $cron->settings($job)->last_message;
 

@@ -39,7 +39,7 @@ class Directory
         // Each group rule's members: [rule id => [email => true]].
         $groupMembers = [];
         foreach ($rules->where('type', 'group') as $rule) {
-            foreach ($this->gam->groupMembers($rule->value) as $email) {
+            foreach ($this->gam->forJob()->groupMembers($rule->value) as $email) {
                 $groupMembers[$rule->id][$email] = true;
             }
         }
@@ -101,7 +101,7 @@ class Directory
     /** @return list<array<string, mixed>> Every user, as GAM's JSON. */
     private function users(): array
     {
-        $result = $this->gam->run(['print', 'users', 'allfields', 'formatjson']);
+        $result = $this->gam->forJob()->run(['print', 'users', 'allfields', 'formatjson']);
         if ($result['exit'] !== 0) {
             throw new RuntimeException(trim($result['stderr']) ?: __('GAM failed.'));
         }
