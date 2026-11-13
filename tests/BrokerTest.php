@@ -194,9 +194,24 @@ class BrokerTest extends TestCase
 
         $this->assertSame('ID [number], call [phone] or [phone] or [phone]', $this->filter('ID 5550123, call (614) 555-0199 or 614.555.0199 or +44 20 7946 0958'));
 
+        // Extra patterns add to the long-number one; turning that off is a separate choice.
         Setting::put('broker.id_patterns', json_encode(['\bS\d{4}\b']));
         app(Filter::class)->forget();
+        $this->assertSame('[number] and [number]', $this->filter('S1234 and 5550123'));
+        Setting::put('broker.hide_long_numbers', '0');
         $this->assertSame('[number] and 5550123', $this->filter('S1234 and 5550123'));
+    }
+
+    public function test_an_email_pattern_cant_be_saved_as_an_id_pattern(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->from('/administration/broker')
+            ->post('/administration/broker/patterns', ['hide_long_numbers' => '1', 'patterns' => '^wm\d{2}[a-z]+@school\.test$'])
+            ->assertSessionHasErrors('patterns');
+
+        $this->assertTrue(Filter::hidesLongNumbers());
+        $this->assertSame([], Filter::idPatterns());
     }
 
     public function test_pseudonyms_become_real_addresses_on_the_way_in(): void

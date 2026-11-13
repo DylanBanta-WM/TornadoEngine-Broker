@@ -11,7 +11,8 @@ use TornadoEngine\Broker\Models\Person;
  */
 class Filter
 {
-    public const DEFAULT_ID_PATTERNS = ['\b\d{5,10}\b'];
+    /** Hidden unless an admin turns it off: numbers of 5 to 10 digits, the usual shape of an ID. */
+    public const LONG_NUMBERS = '\b\d{5,10}\b';
 
     /** Pseudonyms and placeholders the filter writes; the safety net leaves them alone. */
     private const WRITTEN = '/[stc]-[0-9a-f]{10}@(?:student|staff|contact)|\[(?:name|given|family|id) [stc]-[0-9a-f]{10}\]|\[(?:name|given|family|id|phone|number)\]/';
@@ -56,12 +57,21 @@ class Filter
         $this->exact = $this->words = $this->groups = null;
     }
 
-    /** @return list<string> */
+    public static function hidesLongNumbers(): bool
+    {
+        return Setting::get('broker.hide_long_numbers') !== '0';
+    }
+
+    /**
+     * The admin's extra ID patterns (the long-number one is separate).
+     *
+     * @return list<string>
+     */
     public static function idPatterns(): array
     {
-        $saved = Setting::get('broker.id_patterns');
+        $saved = json_decode(Setting::get('broker.id_patterns') ?? '[]', true);
 
-        return $saved === null ? self::DEFAULT_ID_PATTERNS : json_decode($saved, true);
+        return array_values(array_diff(is_array($saved) ? $saved : [], [self::LONG_NUMBERS]));
     }
 
     private function safetyNet(string $text): string
@@ -88,7 +98,7 @@ class Filter
 
         $text = preg_replace(self::PHONE, '[phone]', $text) ?? $text;
 
-        foreach (self::idPatterns() as $pattern) {
+        foreach (array_merge(self::hidesLongNumbers() ? [self::LONG_NUMBERS] : [], self::idPatterns()) as $pattern) {
             $text = @preg_replace('/'.str_replace('/', '\/', $pattern).'/', '[number]', $text) ?? $text;
         }
 

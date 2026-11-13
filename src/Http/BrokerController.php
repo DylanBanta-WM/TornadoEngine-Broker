@@ -54,15 +54,19 @@ class BrokerController extends Controller
         $patterns = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', (string) $request->input('patterns')))));
 
         foreach ($patterns as $pattern) {
+            if (str_contains($pattern, '@')) {
+                return back()->withErrors(['patterns' => __('This looks like an email pattern. Add it under Who is a student as an Email pattern rule.')])->withInput();
+            }
             if (@preg_match('/'.str_replace('/', '\/', $pattern).'/', '') === false) {
                 return back()->withErrors(['patterns' => __(':pattern isn\'t a valid regular expression.', ['pattern' => $pattern])])->withInput();
             }
         }
 
-        Setting::put('broker.id_patterns', json_encode($patterns));
+        Setting::put('broker.hide_long_numbers', $request->boolean('hide_long_numbers') ? '1' : '0');
+        Setting::put('broker.id_patterns', json_encode(array_values(array_diff($patterns, [Filter::LONG_NUMBERS]))));
         app(Filter::class)->forget();
 
-        return back()->with('broker_status', __('Saved the ID patterns.'));
+        return back()->with('broker_status', __('Saved what to hide.'));
     }
 
     public function refresh(Cron $cron, Directory $directory): RedirectResponse
