@@ -36,17 +36,18 @@ class Directory
             throw new RuntimeException(__('GAM returned no users.'));
         }
 
+        // Each group rule's members: [rule id => [email => true]].
         $groupMembers = [];
         foreach ($rules->where('type', 'group') as $rule) {
             foreach ($this->gam->groupMembers($rule->value) as $email) {
-                $groupMembers[$email] = true;
+                $groupMembers[$rule->id][$email] = true;
             }
         }
 
         $report = [];
         $people = [];
-        $hasOuRules = $rules->contains('type', 'ou');
-        $outsideOus = [];
+        $primary = $rules->firstWhere('primary', true);
+        $missed = [];
         foreach ($users as $user) {
             $email = strtolower((string) ($user['primaryEmail'] ?? ''));
             if ($email === '') {
@@ -56,16 +57,17 @@ class Directory
             $matched = $this->matches($user, $email, $rules, $groupMembers);
             $student = $matched !== [];
 
-            // Caught by an email pattern or a group, but in none of the student OUs: worth a look.
-            if ($student && $hasOuRules && ! in_array('ou', $matched, true)) {
-                $outsideOus[] = [
+            // Caught by another rule but not by the primary one: the primary rule is missing them.
+            if ($student && $primary && ! in_array($primary->id, $matched, true)) {
+                $missed[] = [
                     'name' => (string) ($user['name']['fullName'] ?? ''),
                     'email' => $email,
                     'ou' => (string) ($user['orgUnitPath'] ?? ''),
                     'suspended' => (bool) ($user['suspended'] ?? false),
-                    'via' => $matched,
+                    'caught_by' => $rules->whereIn('id', $matched)->map(fn (Rule $rule) => ['type' => $rule->type, 'value' => $rule->value])->values()->all(),
                 ];
             }
+
             $values = $this->identifyingValues($user, $student, $report);
             $kind = $student ? 'student' : 'staff';
 
@@ -85,7 +87,10 @@ class Directory
 
         Setting::put('broker.groups', json_encode(array_column($this->gam->groups(), 'email')));
         Setting::put('broker.report', json_encode($report));
-        Setting::put('broker.outside_ous', json_encode($outsideOus));
+        Setting::put('broker.missed_by_primary', json_encode($primary ? [
+            'rule' => ['type' => $primary->type, 'value' => $primary->value],
+            'students' => $missed,
+        ] : null));
         Setting::put('broker.refreshed_at', now()->toIso8601String());
 
         $students = count(array_filter($people, fn ($p) => $p['kind'] === 'student'));
@@ -118,38 +123,33 @@ class Directory
     }
 
     /**
-     * Which kinds of rule this person matches: "group", "ou" and/or "email". None means staff.
+     * The ids of the rules this person matches. None means staff.
      *
      * @param  Collection<int, Rule>  $rules
-     * @param  array<string, true>  $groupMembers
-     * @return list<string>
+     * @param  array<int, array<string, true>>  $groupMembers
+     * @return list<int>
      */
     private function matches(array $user, string $email, $rules, array $groupMembers): array
     {
-        $matched = isset($groupMembers[$email]) ? ['group'] : [];
-
         $ou = (string) ($user['orgUnitPath'] ?? '');
         $addresses = array_merge([$email], array_map('strtolower', $user['aliases'] ?? []));
+        $matched = [];
 
         foreach ($rules as $rule) {
-            if ($rule->type === 'ou') {
-                $path = rtrim($rule->value, '/');
-                if (strcasecmp($ou, $path) === 0 || ($rule->sub_ous && stripos($ou, $path.'/') === 0)) {
-                    $matched[] = 'ou';
-                }
-            }
+            $hit = match ($rule->type) {
+                'group' => isset($groupMembers[$rule->id][$email]),
+                'ou' => strcasecmp($ou, rtrim($rule->value, '/')) === 0
+                    || ($rule->sub_ous && stripos($ou, rtrim($rule->value, '/').'/') === 0),
+                'email' => (bool) array_filter($addresses, fn ($address) => @preg_match('/'.str_replace('/', '\/', $rule->value).'/i', $address) === 1),
+                default => false,
+            };
 
-            if ($rule->type === 'email') {
-                foreach ($addresses as $address) {
-                    if (@preg_match('/'.str_replace('/', '\/', $rule->value).'/i', $address) === 1) {
-                        $matched[] = 'email';
-                        break;
-                    }
-                }
+            if ($hit) {
+                $matched[] = $rule->id;
             }
         }
 
-        return array_values(array_unique($matched));
+        return $matched;
     }
 
     /**

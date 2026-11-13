@@ -1,11 +1,11 @@
 @php
     $broker = app(\TornadoEngine\Broker\Broker::class);
     $notReady = $broker->notReady();
-    $rules = \TornadoEngine\Broker\Models\Rule::orderBy('type')->orderBy('value')->get();
+    $rules = \TornadoEngine\Broker\Models\Rule::orderByDesc('primary')->orderBy('type')->orderBy('value')->get();
     $counts = \TornadoEngine\Broker\Models\Person::query()->selectRaw('kind, count(*) as total')->groupBy('kind')->pluck('total', 'kind');
     $report = json_decode(\App\Models\Setting::get('broker.report') ?? '[]', true);
-    $outsideOus = json_decode(\App\Models\Setting::get('broker.outside_ous') ?? '[]', true);
-    $caughtBy = ['email' => __('your email pattern rule'), 'group' => __('a Google Group rule')];
+    $missed = json_decode(\App\Models\Setting::get('broker.missed_by_primary') ?? 'null', true);
+    $describe = fn (array $rule) => \TornadoEngine\Broker\Models\Rule::describe($rule['type'], $rule['value']);
     $refreshed = \App\Models\Setting::get('broker.refreshed_at');
     $box = 'rounded-md border px-4 py-3';
     $types = ['ou' => __('OU'), 'group' => __('Google Group'), 'email' => __('Email pattern')];
@@ -30,16 +30,28 @@
 
     <div>
         <h4 class="font-medium text-gray-900 dark:text-gray-100">{{ __('Who is a student') }}</h4>
-        <p class="text-gray-600 dark:text-gray-400">{{ __('Anyone matching at least one rule. Everyone else in Google is staff.') }}</p>
+        <p class="text-gray-600 dark:text-gray-400">{{ __('Anyone matching at least one rule is a student. Everyone else in Google is staff.') }}</p>
+        <p class="mt-1 text-gray-600 dark:text-gray-400">{{ __('You can mark one rule as primary: the one that should cover every student, such as your students\' OU. After each refresh, students caught by one of the other rules but not by the primary rule are listed below, so you can see who it\'s missing (for example, a new student not yet moved into the student OU). They\'re still treated as students. Without a primary rule, rules aren\'t compared.') }}</p>
         <ul class="mt-2 divide-y divide-gray-200 dark:divide-gray-700 rounded-md border border-gray-200 dark:border-gray-700">
             @forelse ($rules as $rule)
-                <li class="flex min-h-11 items-center justify-between gap-3 px-3">
-                    <span class="min-w-0 break-all"><span class="text-gray-500 dark:text-gray-400">{{ $types[$rule->type] }}:</span> <code class="font-mono">{{ $rule->value }}</code>@if ($rule->type === 'ou' && $rule->sub_ous) <span class="text-gray-500 dark:text-gray-400">{{ __('and sub-OUs') }}</span>@endif</span>
-                    <form method="POST" action="{{ route('broker.rules.destroy', $rule) }}">
-                        @csrf
-                        @method('DELETE')
-                        <button class="min-h-11 px-2 text-sm text-red-700 dark:text-red-400 underline">{{ __('Remove') }}</button>
-                    </form>
+                <li class="flex flex-col gap-1 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                    <span class="min-w-0 break-all">
+                        @if ($rule->primary)
+                            <span class="me-1 rounded bg-indigo-50 dark:bg-indigo-900/50 px-1.5 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">{{ __('Primary') }}</span>
+                        @endif
+                        <span class="text-gray-500 dark:text-gray-400">{{ $types[$rule->type] }}:</span> <code class="font-mono">{{ $rule->value }}</code>@if ($rule->type === 'ou' && $rule->sub_ous) <span class="text-gray-500 dark:text-gray-400">{{ __('and sub-OUs') }}</span>@endif
+                    </span>
+                    <span class="-ms-2 flex shrink-0 sm:ms-0">
+                        <form method="POST" action="{{ route('broker.rules.primary', $rule) }}">
+                            @csrf
+                            <button class="min-h-11 px-2 text-sm text-gray-700 dark:text-gray-300 underline">{{ $rule->primary ? __('Not primary') : __('Make primary') }}</button>
+                        </form>
+                        <form method="POST" action="{{ route('broker.rules.destroy', $rule) }}">
+                            @csrf
+                            @method('DELETE')
+                            <button class="min-h-11 px-2 text-sm text-red-700 dark:text-red-400 underline">{{ __('Remove') }}</button>
+                        </form>
+                    </span>
                 </li>
             @empty
                 <li class="px-3 py-3 text-gray-600 dark:text-gray-400">{{ __('No rules yet.') }}</li>
@@ -86,21 +98,23 @@
         </div>
     @endif
 
-    @if ($outsideOus)
+    @if ($missed && $rules->firstWhere('primary', true))
         <div>
-            <h4 class="font-medium text-gray-900 dark:text-gray-100">{{ __('Students outside your student OUs') }} ({{ count($outsideOus) }})</h4>
-            <p class="text-gray-600 dark:text-gray-400">{{ __('These accounts were caught by your email pattern rule (or a Google Group rule) but not by your OU rule: they aren\'t in any of your student OUs. The broker treats them as students. You may want to move them into a student OU.') }}</p>
-            <ul class="mt-2 divide-y divide-gray-200 dark:divide-gray-700 rounded-md border border-gray-200 dark:border-gray-700">
-                @foreach ($outsideOus as $account)
-                    <li class="px-3 py-2">
-                        <p class="font-medium text-gray-900 dark:text-gray-100">{{ $account['name'] ?: $account['email'] }}
-                            @if ($account['suspended'])<span class="ms-1 rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:text-gray-300">{{ __('suspended') }}</span>@endif
-                        </p>
-                        <p class="break-all text-gray-600 dark:text-gray-400">{{ $account['email'] }}</p>
-                        <p class="text-gray-600 dark:text-gray-400">{{ __('In OU :ou, caught by :rules.', ['ou' => $account['ou'] ?: '/', 'rules' => implode(__(' and '), array_map(fn ($via) => $caughtBy[$via] ?? $via, $account['via']))]) }}</p>
-                    </li>
-                @endforeach
-            </ul>
+            <h4 class="font-medium text-gray-900 dark:text-gray-100">{{ __('Students your primary rule missed') }} ({{ count($missed['students']) }})</h4>
+            <p class="text-gray-600 dark:text-gray-400">{{ __('Your primary rule is :rule. These students were caught by another rule but not by it, as of the last refresh. They\'re treated as students.', ['rule' => $describe($missed['rule'])]) }}</p>
+            @if ($missed['students'])
+                <ul class="mt-2 divide-y divide-gray-200 dark:divide-gray-700 rounded-md border border-gray-200 dark:border-gray-700">
+                    @foreach ($missed['students'] as $account)
+                        <li class="px-3 py-2">
+                            <p class="font-medium text-gray-900 dark:text-gray-100">{{ $account['name'] ?: $account['email'] }}
+                                @if ($account['suspended'])<span class="ms-1 rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:text-gray-300">{{ __('suspended') }}</span>@endif
+                            </p>
+                            <p class="break-all text-gray-600 dark:text-gray-400">{{ $account['email'] }}</p>
+                            <p class="break-all text-gray-600 dark:text-gray-400">{{ __('In OU :ou. Caught by :rules.', ['ou' => $account['ou'] ?: '/', 'rules' => implode(__(' and '), array_map($describe, $account['caught_by']))]) }}</p>
+                        </li>
+                    @endforeach
+                </ul>
+            @endif
         </div>
     @endif
 

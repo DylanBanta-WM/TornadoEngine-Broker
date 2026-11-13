@@ -40,6 +40,21 @@ class BrokerController extends Controller
         return back()->with('broker_status', __('Added the rule. Click Refresh now to apply it.'));
     }
 
+    /**
+     * Makes this the primary rule, or stops it being primary. There's at most one.
+     */
+    public function primary(Rule $rule): RedirectResponse
+    {
+        $makePrimary = ! $rule->primary;
+
+        Rule::query()->update(['primary' => false]);
+        $rule->update(['primary' => $makePrimary]);
+
+        return back()->with('broker_status', $makePrimary
+            ? __('That\'s now your primary rule. Click Refresh now to check the others against it.')
+            : __('You have no primary rule now, so rules aren\'t compared.'));
+    }
+
     public function removeRule(Rule $rule): RedirectResponse
     {
         $rule->delete();

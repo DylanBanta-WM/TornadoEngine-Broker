@@ -170,21 +170,65 @@ class BrokerTest extends TestCase
         $this->assertSame('Hello [given]!', $this->filter('Hello Ann!'));
     }
 
-    public function test_students_caught_by_a_pattern_but_outside_the_student_ous_are_listed_for_admins(): void
+    private function refresh(): void
+    {
+        app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
+    }
+
+    private function brokerTab()
+    {
+        return $this->actingAs(User::factory()->create(['is_admin' => true]))->get('/administration/broker');
+    }
+
+    public function test_without_a_primary_rule_rules_arent_compared(): void
     {
         Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
         Rule::create(['type' => 'email', 'value' => '^wm\\d{2}[a-z]+@school\\.test$']);
-        app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
+        $this->refresh();
 
         $this->assertSame('student', Person::where('email', 'wm30lost@school.test')->value('kind'));
+        $this->brokerTab()->assertDontSee('Students your primary rule missed')->assertSee('Without a primary rule, rules aren');
+    }
 
-        $this->actingAs(User::factory()->create(['is_admin' => true]))->get('/administration/broker')
-            ->assertSee('Students outside your student OUs (1)')
-            ->assertSee('caught by your email pattern rule (or a Google Group rule) but not by your OU rule')
+    public function test_students_the_primary_rule_missed_are_listed_with_what_caught_them(): void
+    {
+        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true, 'primary' => true]);
+        Rule::create(['type' => 'email', 'value' => '^wm\\d{2}[a-z]+@school\\.test$']);
+        $this->refresh();
+
+        $this->brokerTab()
+            ->assertSee('Students your primary rule missed (1)')
+            ->assertSee('Your primary rule is the OU /Students.')
             ->assertSee('Lost Student')
             ->assertSee('wm30lost@school.test')
-            ->assertSee('In OU /, caught by your email pattern rule.')
+            ->assertSee('In OU /. Caught by the email pattern ^wm\\d{2}[a-z]+@school\\.test$.', false)
             ->assertSee('suspended');
+    }
+
+    public function test_a_google_group_can_be_the_primary_rule(): void
+    {
+        Rule::create(['type' => 'group', 'value' => 'honor-roll@school.test', 'primary' => true]);
+        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
+        $this->refresh();
+
+        $this->brokerTab()
+            ->assertSee('Students your primary rule missed (2)')
+            ->assertSee('Your primary rule is the Google Group honor-roll@school.test.')
+            ->assertSee('In OU /Students/MS. Caught by the OU /Students.');
+    }
+
+    public function test_only_one_rule_is_primary(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $ou = Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true, 'primary' => true]);
+        $group = Rule::create(['type' => 'group', 'value' => 'honor-roll@school.test']);
+
+        $this->actingAs($admin)->from('/administration/broker')->post("/administration/broker/rules/{$group->id}/primary")->assertRedirect('/administration/broker');
+        $this->assertFalse($ou->fresh()->primary);
+        $this->assertTrue($group->fresh()->primary);
+
+        $this->actingAs($admin)->post("/administration/broker/rules/{$group->id}/primary");
+        $this->assertSame(0, Rule::where('primary', true)->count());
     }
 
     public function test_the_safety_net_hides_phone_numbers(): void
