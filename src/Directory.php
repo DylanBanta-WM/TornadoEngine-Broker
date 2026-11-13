@@ -45,13 +45,27 @@ class Directory
 
         $report = [];
         $people = [];
+        $hasOuRules = $rules->contains('type', 'ou');
+        $outsideOus = [];
         foreach ($users as $user) {
             $email = strtolower((string) ($user['primaryEmail'] ?? ''));
             if ($email === '') {
                 continue;
             }
 
-            $student = $this->isStudent($user, $email, $rules, $groupMembers);
+            $matched = $this->matches($user, $email, $rules, $groupMembers);
+            $student = $matched !== [];
+
+            // Caught by an email pattern or a group, but in none of the student OUs: worth a look.
+            if ($student && $hasOuRules && ! in_array('ou', $matched, true)) {
+                $outsideOus[] = [
+                    'name' => (string) ($user['name']['fullName'] ?? ''),
+                    'email' => $email,
+                    'ou' => (string) ($user['orgUnitPath'] ?? ''),
+                    'suspended' => (bool) ($user['suspended'] ?? false),
+                    'via' => $matched,
+                ];
+            }
             $values = $this->identifyingValues($user, $student, $report);
             $kind = $student ? 'student' : 'staff';
 
@@ -71,6 +85,7 @@ class Directory
 
         Setting::put('broker.groups', json_encode(array_column($this->gam->groups(), 'email')));
         Setting::put('broker.report', json_encode($report));
+        Setting::put('broker.outside_ous', json_encode($outsideOus));
         Setting::put('broker.refreshed_at', now()->toIso8601String());
 
         $students = count(array_filter($people, fn ($p) => $p['kind'] === 'student'));
@@ -103,14 +118,15 @@ class Directory
     }
 
     /**
+     * Which kinds of rule this person matches: "group", "ou" and/or "email". None means staff.
+     *
      * @param  Collection<int, Rule>  $rules
      * @param  array<string, true>  $groupMembers
+     * @return list<string>
      */
-    private function isStudent(array $user, string $email, $rules, array $groupMembers): bool
+    private function matches(array $user, string $email, $rules, array $groupMembers): array
     {
-        if (isset($groupMembers[$email])) {
-            return true;
-        }
+        $matched = isset($groupMembers[$email]) ? ['group'] : [];
 
         $ou = (string) ($user['orgUnitPath'] ?? '');
         $addresses = array_merge([$email], array_map('strtolower', $user['aliases'] ?? []));
@@ -119,20 +135,21 @@ class Directory
             if ($rule->type === 'ou') {
                 $path = rtrim($rule->value, '/');
                 if (strcasecmp($ou, $path) === 0 || ($rule->sub_ous && stripos($ou, $path.'/') === 0)) {
-                    return true;
+                    $matched[] = 'ou';
                 }
             }
 
             if ($rule->type === 'email') {
                 foreach ($addresses as $address) {
                     if (@preg_match('/'.str_replace('/', '\/', $rule->value).'/i', $address) === 1) {
-                        return true;
+                        $matched[] = 'email';
+                        break;
                     }
                 }
             }
         }
 
-        return false;
+        return array_values(array_unique($matched));
     }
 
     /**

@@ -77,6 +77,10 @@ class BrokerTest extends TestCase
                 'name' => ['fullName' => 'Zed Quill', 'givenName' => 'Zed', 'familyName' => 'Quill'],
             ],
             [
+                'primaryEmail' => 'wm30lost@school.test', 'orgUnitPath' => '/', 'suspended' => true,
+                'name' => ['fullName' => 'Lost Student', 'givenName' => 'Lost', 'familyName' => 'Student'],
+            ],
+            [
                 'primaryEmail' => 'kim.teacher@school.test', 'orgUnitPath' => '/Staff',
                 'name' => ['fullName' => 'Kim Teacher', 'givenName' => 'Kim', 'familyName' => 'Teacher'],
                 'externalIds' => [['type' => 'organization', 'value' => 'E-77']],
@@ -167,6 +171,23 @@ class BrokerTest extends TestCase
         $this->assertSame('Hello [given]!', $this->filter('Hello Ann!'));
     }
 
+    public function test_students_caught_by_a_pattern_but_outside_the_student_ous_are_listed_for_admins(): void
+    {
+        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
+        Rule::create(['type' => 'email', 'value' => '^wm\\d{2}[a-z]+@school\\.test$']);
+        app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
+
+        $this->assertSame('student', Person::where('email', 'wm30lost@school.test')->value('kind'));
+
+        $this->actingAs(User::factory()->create(['is_admin' => true]))->get('/administration/broker')
+            ->assertSee('Students outside your student OUs (1)')
+            ->assertSee('caught by your email pattern rule (or a Google Group rule) but not by your OU rule')
+            ->assertSee('Lost Student')
+            ->assertSee('wm30lost@school.test')
+            ->assertSee('In OU /, caught by your email pattern rule.')
+            ->assertSee('suspended');
+    }
+
     public function test_the_safety_net_hides_unknown_numbers_and_phones(): void
     {
         $this->setUpBroker();
@@ -243,7 +264,7 @@ class BrokerTest extends TestCase
         $this->actingAs($admin)->from('/administration')->post('/administration/broker/refresh')->assertRedirect('/administration');
 
         $this->actingAs($admin)->get('/administration/broker')
-            ->assertSee('Ready: 2 students and 2 staff')
+            ->assertSee('Ready: 2 students and 3 staff')
             ->assertSee('externalIds')
             ->assertDontSee('204417');
 

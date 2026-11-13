@@ -4,6 +4,8 @@
     $rules = \TornadoEngine\Broker\Models\Rule::orderBy('type')->orderBy('value')->get();
     $counts = \TornadoEngine\Broker\Models\Person::query()->selectRaw('kind, count(*) as total')->groupBy('kind')->pluck('total', 'kind');
     $report = json_decode(\App\Models\Setting::get('broker.report') ?? '[]', true);
+    $outsideOus = json_decode(\App\Models\Setting::get('broker.outside_ous') ?? '[]', true);
+    $caughtBy = ['email' => __('your email pattern rule'), 'group' => __('a Google Group rule')];
     $refreshed = \App\Models\Setting::get('broker.refreshed_at');
     $box = 'rounded-md border px-4 py-3';
     $types = ['ou' => __('OU'), 'group' => __('Google Group'), 'email' => __('Email pattern')];
@@ -88,6 +90,24 @@
             <ul class="mt-1 space-y-0.5">
                 @foreach ($report as $field => $count)
                     <li><code class="font-mono">{{ $field }}</code>: {{ number_format($count) }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    @if ($outsideOus)
+        <div>
+            <h4 class="font-medium text-gray-900 dark:text-gray-100">{{ __('Students outside your student OUs') }} ({{ count($outsideOus) }})</h4>
+            <p class="text-gray-600 dark:text-gray-400">{{ __('These accounts were caught by your email pattern rule (or a Google Group rule) but not by your OU rule: they aren\'t in any of your student OUs. The broker treats them as students. You may want to move them into a student OU.') }}</p>
+            <ul class="mt-2 divide-y divide-gray-200 dark:divide-gray-700 rounded-md border border-gray-200 dark:border-gray-700">
+                @foreach ($outsideOus as $account)
+                    <li class="px-3 py-2">
+                        <p class="font-medium text-gray-900 dark:text-gray-100">{{ $account['name'] ?: $account['email'] }}
+                            @if ($account['suspended'])<span class="ms-1 rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:text-gray-300">{{ __('suspended') }}</span>@endif
+                        </p>
+                        <p class="break-all text-gray-600 dark:text-gray-400">{{ $account['email'] }}</p>
+                        <p class="text-gray-600 dark:text-gray-400">{{ __('In OU :ou, caught by :rules.', ['ou' => $account['ou'] ?: '/', 'rules' => implode(__(' and '), array_map(fn ($via) => $caughtBy[$via] ?? $via, $account['via']))]) }}</p>
+                    </li>
                 @endforeach
             </ul>
         </div>
