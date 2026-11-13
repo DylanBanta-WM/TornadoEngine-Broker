@@ -231,6 +231,19 @@ class BrokerTest extends TestCase
         $this->assertSame(0, Rule::where('primary', true)->count());
     }
 
+    public function test_text_for_the_website_shows_real_people_again(): void
+    {
+        $this->setUpBroker();
+        $broker = app(Broker::class);
+        $person = Person::where('kind', 'student')->first();
+        $names = collect(json_decode($person->getRawOriginal('values'), true))->keyBy(1);
+
+        $filtered = $broker->filter("Email {$person->email} about ".$names['name'][0]);
+        $this->assertStringNotContainsString($person->email, $filtered);
+        $this->assertSame("Email {$person->email} about ".$names['name'][0], $broker->display($filtered));
+        $this->assertSame('s-0000000000@student stays', $broker->display('s-0000000000@student stays'));
+    }
+
     public function test_the_safety_net_hides_phone_numbers(): void
     {
         $this->setUpBroker();

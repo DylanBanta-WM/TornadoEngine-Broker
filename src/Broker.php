@@ -69,6 +69,30 @@ class Broker
         }, $args);
     }
 
+    /**
+     * Claude's text for people on the website (never for Claude): pseudonyms become real
+     * addresses, and [name …], [given …] and [family …] become the person's names.
+     */
+    public function display(string $text): string
+    {
+        $people = [];
+        $person = function (string $pseudonym) use (&$people) {
+            return $people[$pseudonym] ??= Person::where('pseudonym', $pseudonym)->first();
+        };
+
+        $text = preg_replace_callback('/\[(name|given|family) ([stc]-[0-9a-f]{10})\]/', function ($m) use ($person) {
+            foreach (json_decode($person($m[2])?->getRawOriginal('values') ?? '[]', true) ?: [] as [$value, $label]) {
+                if ($label === $m[1]) {
+                    return $value;
+                }
+            }
+
+            return $m[0];
+        }, $text);
+
+        return preg_replace_callback(self::PSEUDONYM, fn ($m) => $person($m[1])?->email ?? $m[0], $text);
+    }
+
     /** @param  list<string>  $command  The real command, as run. */
     public function log(string $tool, array $command, ?int $exit, bool $ok): void
     {

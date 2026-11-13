@@ -23,7 +23,7 @@
             "provider": "TornadoEngine\\Broker\\BrokerServiceProvider"
         },
         "branch-alias": {
-            "dev-main": "0.7.x-dev"
+            "dev-main": "0.8.x-dev"
         }
     }
 }
