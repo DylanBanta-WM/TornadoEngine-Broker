@@ -18,12 +18,12 @@
     "extra": {
         "tornado": {
             "name": "Broker",
-            "core": ">=0.5",
+            "core": ">=0.6",
             "core-module": false,
             "provider": "TornadoEngine\\Broker\\BrokerServiceProvider"
         },
         "branch-alias": {
-            "dev-main": "0.1.x-dev"
+            "dev-main": "0.2.x-dev"
         }
     }
 }

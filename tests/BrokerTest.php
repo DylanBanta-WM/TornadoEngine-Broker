@@ -242,7 +242,7 @@ class BrokerTest extends TestCase
 
         $this->actingAs($admin)->from('/administration')->post('/administration/broker/refresh')->assertRedirect('/administration');
 
-        $this->actingAs($admin)->get('/administration')
+        $this->actingAs($admin)->get('/administration/broker')
             ->assertSee('Ready: 2 students and 2 staff')
             ->assertSee('externalIds')
             ->assertDontSee('204417');

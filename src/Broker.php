@@ -25,11 +25,11 @@ class Broker
     public function notReady(): ?string
     {
         if (! Rule::query()->exists()) {
-            return __('The broker has no student rules yet. An admin adds them on the Administration page.');
+            return __('The broker has no student rules yet. An admin adds them on the Broker tab in Administration.');
         }
 
         if (Setting::get('broker.refreshed_at') === null || ! Person::whereIn('kind', ['student', 'staff'])->exists()) {
-            return __('The broker hasn\'t loaded the directory yet. An admin clicks Refresh now on the Administration page.');
+            return __('The broker hasn\'t loaded the directory yet. An admin clicks Refresh now on the Broker tab in Administration.');
         }
 
         return null;

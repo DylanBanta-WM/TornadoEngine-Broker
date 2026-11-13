@@ -22,7 +22,8 @@ class BrokerServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'broker');
         $this->loadRoutesFrom(__DIR__.'/../routes/broker.php');
 
-        $administration->card('broker::administration-card', order: 30);
+        $administration->tab('broker', __('Broker'), order: 40);
+        $administration->card('broker::administration-card', tab: 'broker');
 
         // Pages Claude opens through the harness show pseudonyms, and only once the broker is set up.
         $view->filter(fn (string $text) => $broker->filter($text), ready: fn () => $broker->ready());

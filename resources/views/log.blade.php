@@ -1,4 +1,7 @@
-<x-admin-layout :title="__('What Claude ran')">
+<x-admin-layout :title="__('Administration')">
+    <x-administration-tabs current="broker" />
+
+    <h3 class="font-semibold text-gray-900 dark:text-gray-100">{{ __('What Claude ran') }}</h3>
     <p class="text-sm text-gray-600 dark:text-gray-400">{{ __('Every command Claude ran through the broker, newest first, with the real addresses it used. Claude only saw pseudonyms.') }}</p>
 
     <section class="bg-white dark:bg-gray-800 shadow-sm sm:rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
