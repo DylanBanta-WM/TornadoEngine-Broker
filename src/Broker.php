@@ -14,7 +14,7 @@ class Broker
 {
     private const PSEUDONYM = '/\b([stc]-[0-9a-f]{10})@(student|staff|contact)\b/';
 
-    private const PLACEHOLDER = '/\[(?:name|given|family|id)(?: [stc]-[0-9a-f]{10})?\]|\[(?:phone|number)\]/';
+    private const PLACEHOLDER = '/\[(?:name|given|family|id)(?: [stc]-[0-9a-f]{10})?\]|\[phone\]/';
 
     public function __construct(private Filter $filter) {}
 

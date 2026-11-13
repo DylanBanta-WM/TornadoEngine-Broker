@@ -74,26 +74,6 @@
         </form>
     </div>
 
-    <details class="rounded-md border border-gray-200 dark:border-gray-700 px-3" @if ($errors->has('patterns')) open @endif>
-        <summary class="flex min-h-11 cursor-pointer items-center font-medium text-gray-900 dark:text-gray-100">{{ __('Advanced: other numbers to hide') }}</summary>
-        <form method="POST" action="{{ route('broker.patterns') }}" class="space-y-3 pb-3">
-            @csrf
-            <p class="text-gray-600 dark:text-gray-400">{{ __('Student IDs stored in Google are always hidden. These catch ID numbers the directory doesn\'t know about, wherever they appear.') }}</p>
-            <label class="flex min-h-11 items-center gap-2">
-                <input type="hidden" name="hide_long_numbers" value="0">
-                <input type="checkbox" name="hide_long_numbers" value="1" class="rounded text-indigo-600 border-gray-300 dark:border-gray-700 dark:bg-gray-900 focus:ring-indigo-500" @checked(\TornadoEngine\Broker\Filter::hidesLongNumbers())>
-                <span>{{ __('Hide every number of 5 to 10 digits (recommended)') }}</span>
-            </label>
-            <div>
-                <x-input-label for="broker-patterns" :value="__('Extra ID patterns')" />
-                <p class="text-gray-600 dark:text-gray-400">{{ __('Regular expressions, one per line, for IDs with another shape, for example \bS\d{6}\b. Matches are hidden as [number]. This isn\'t where student rules go.') }}</p>
-                <textarea id="broker-patterns" name="patterns" rows="3" class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 font-mono text-base focus:border-indigo-500 focus:ring-indigo-500">{{ old('patterns', implode("\n", \TornadoEngine\Broker\Filter::idPatterns())) }}</textarea>
-                <x-input-error :messages="$errors->get('patterns')" class="mt-2" />
-            </div>
-            <div class="flex justify-end"><x-secondary-button type="submit">{{ __('Save') }}</x-secondary-button></div>
-        </form>
-    </details>
-
     @if ($report)
         <div>
             <h4 class="font-medium text-gray-900 dark:text-gray-100">{{ __('Where student information was found') }}</h4>

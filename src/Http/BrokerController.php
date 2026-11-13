@@ -2,14 +2,12 @@
 
 namespace TornadoEngine\Broker\Http;
 
-use App\Models\Setting;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Validation\Rule as ValidationRule;
 use Illuminate\View\View;
 use TornadoEngine\Broker\Directory;
-use TornadoEngine\Broker\Filter;
 use TornadoEngine\Broker\Models\LogEntry;
 use TornadoEngine\Broker\Models\Rule;
 use TornadoEngine\Cron\Cron;
@@ -47,26 +45,6 @@ class BrokerController extends Controller
         $rule->delete();
 
         return back()->with('broker_status', __('Removed the rule. Click Refresh now to apply it.'));
-    }
-
-    public function patterns(Request $request): RedirectResponse
-    {
-        $patterns = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', (string) $request->input('patterns')))));
-
-        foreach ($patterns as $pattern) {
-            if (str_contains($pattern, '@')) {
-                return back()->withErrors(['patterns' => __('This looks like an email pattern. Add it under Who is a student as an Email pattern rule.')])->withInput();
-            }
-            if (@preg_match('/'.str_replace('/', '\/', $pattern).'/', '') === false) {
-                return back()->withErrors(['patterns' => __(':pattern isn\'t a valid regular expression.', ['pattern' => $pattern])])->withInput();
-            }
-        }
-
-        Setting::put('broker.hide_long_numbers', $request->boolean('hide_long_numbers') ? '1' : '0');
-        Setting::put('broker.id_patterns', json_encode(array_values(array_diff($patterns, [Filter::LONG_NUMBERS]))));
-        app(Filter::class)->forget();
-
-        return back()->with('broker_status', __('Saved what to hide.'));
     }
 
     public function refresh(Cron $cron, Directory $directory): RedirectResponse
