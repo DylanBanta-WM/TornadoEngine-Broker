@@ -28,6 +28,16 @@ class Filter
             return $text;
         }
 
+        // Pick up anyone added or changed since the broker last looked; if that fails, nothing passes.
+        try {
+            app(Directory::class)->syncIfChanged();
+        } catch (BrokerException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            report($e);
+            throw new BrokerException(__('The broker couldn\'t update who gets pseudonyms, so nothing was passed to Claude.'));
+        }
+
         $this->load();
 
         $text = strtr($text, $this->exact);

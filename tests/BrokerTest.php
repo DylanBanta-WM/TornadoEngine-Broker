@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Broker;
+use TornadoEngine\Broker\Directory;
+use TornadoEngine\Broker\Filter;
 use TornadoEngine\Broker\Mcp\BrokerServer;
 use TornadoEngine\Broker\Mcp\Tools\BrokerInfoTool;
 use TornadoEngine\Broker\Mcp\Tools\GamTool;
@@ -241,5 +243,29 @@ class BrokerTest extends TestCase
         rewind($out);
 
         return stream_get_contents($out);
+    }
+
+    public function test_people_added_after_the_last_refresh_are_given_pseudonyms_before_anything_is_filtered(): void
+    {
+        $this->setUpBroker();
+        app(Directory::class)->refresh();
+        $filter = app(Filter::class);
+
+        // Added during the day, through Access, after the refresh.
+        $late = User::factory()->create(['email' => 'pass.is12345678@school.test', 'name' => 'PassIs12345678 Testing']);
+        $late->roles()->attach(Role::where('name', 'Student')->first());
+        $text = $filter->apply("name,email\nPassIs12345678 Testing,pass.is12345678@school.test");
+        $this->assertStringNotContainsString('PassIs12345678', $text);
+        $this->assertStringNotContainsString('pass.is12345678@school.test', $text);
+        $this->assertStringContainsString(Pseudonym::for('pass.is12345678@school.test'), $text);
+
+        // A staff member who becomes a student (same number of role rows).
+        $kim = User::where('email', 'kim.teacher@school.test')->first();
+        $kim->roles()->sync([Role::where('name', 'Student')->value('id')]);
+        $this->assertStringNotContainsString('Kim Teacher', $filter->apply('Kim Teacher'));
+
+        // Renamed.
+        $late->update(['name' => 'Renamed Personson']);
+        $this->assertStringNotContainsString('Personson', $filter->apply('Renamed Personson'));
     }
 }

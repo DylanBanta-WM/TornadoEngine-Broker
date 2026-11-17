@@ -9,7 +9,7 @@
     $box = 'rounded-md border px-4 py-3';
 @endphp
 
-<x-settings-card :title="__('Broker')">
+<x-settings-card :title="__('Broker')" wide>
     @if ($notReady)
         <p class="{{ $box }} border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200">{{ $notReady }}</p>
     @else
@@ -28,7 +28,7 @@
         @csrf
         <fieldset>
             <legend class="font-medium text-gray-900 dark:text-gray-100">{{ __('Roles given a pseudonym') }}</legend>
-            <div class="mt-2 space-y-2">
+            <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
                 @foreach ($roles as $role)
                     <label class="flex min-h-11 items-center justify-between gap-3 rounded-md border border-gray-200 dark:border-gray-700 px-3 has-[:checked]:border-indigo-500 has-[:checked]:bg-indigo-50 dark:has-[:checked]:bg-indigo-950/40">
                         <span class="flex items-center gap-3">
