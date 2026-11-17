@@ -3,33 +3,66 @@
 namespace TornadoEngine\Broker;
 
 use App\Models\Setting;
+use Closure;
+use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Models\LogEntry;
 use TornadoEngine\Broker\Models\Person;
-use TornadoEngine\Broker\Models\Rule;
 
 /**
  * Between Claude and the district's data: pseudonyms on the way out, real addresses on the way in.
  */
 class Broker
 {
-    private const PSEUDONYM = '/\b([stc]-[0-9a-f]{10})@(student|staff|contact)\b/';
+    private const PSEUDONYM = '/\b(p-[0-9a-f]{10})@([a-z0-9-]+)\b/';
 
-    private const PLACEHOLDER = '/\[(?:name|given|family|id)(?: [stc]-[0-9a-f]{10})?\]|\[phone\]/';
+    private const PLACEHOLDER = '/\[(?:name|given|family|id)(?: p-[0-9a-f]{10})?\]|\[phone\]/';
+
+    /** @var array<string, Closure(list<string>): array<string, list<array{0: string, 1: string}>>> */
+    private array $sources = [];
 
     public function __construct(private Filter $filter) {}
 
     /**
-     * Why the broker can't run yet, or null if it can. Without student rules and a directory,
-     * real names could reach Claude, so it refuses.
+     * Adds a place the broker learns what identifies people, for example GAM (Google):
+     *
+     *     $broker->source('google', fn (array $emails) => ['ann@school.org' => [['Ann Lee', 'name'], ['12345', 'externalIds']]]);
+     *
+     * It gets the emails of everyone given a pseudonym and returns the values to replace, with a
+     * label each (name, given and family are matched as words; anything else exactly).
+     */
+    public function source(string $name, Closure $values): static
+    {
+        $this->sources[$name] = $values;
+
+        return $this;
+    }
+
+    /** @return array<string, Closure> */
+    public function sources(): array
+    {
+        return $this->sources;
+    }
+
+    /**
+     * The roles whose people are given pseudonyms (all of them until an admin chooses).
+     *
+     * @return list<int>
+     */
+    public static function pseudonymRoleIds(): array
+    {
+        $saved = json_decode(Setting::get('broker.pseudonym_roles') ?? 'null', true);
+        $all = Role::pluck('id')->all();
+
+        return is_array($saved) ? array_values(array_intersect($all, $saved)) : $all;
+    }
+
+    /**
+     * Why the broker can't run yet, or null if it can: it needs to have loaded who gets pseudonyms.
      */
     public function notReady(): ?string
     {
-        if (! Rule::query()->exists()) {
-            return __('The broker has no student rules yet. An admin adds them on the Broker tab in Administration.');
-        }
-
-        if (Setting::get('broker.refreshed_at') === null || ! Person::whereIn('kind', ['student', 'staff'])->exists()) {
-            return __('The broker hasn\'t loaded the directory yet. An admin clicks Refresh now on the Broker tab in Administration.');
+        if (Setting::get('broker.refreshed_at') === null) {
+            return __('The broker hasn\'t loaded who gets pseudonyms yet. An admin clicks Refresh now on the Broker tab in Administration.');
         }
 
         return null;
@@ -55,11 +88,11 @@ class Broker
     {
         return array_map(function (string $arg) {
             if (preg_match(self::PLACEHOLDER, $arg)) {
-                throw new BrokerException(__('Placeholders like [name s-…] can\'t be used in commands. Use the person\'s pseudonym address, for example s-0123456789@student.'));
+                throw new BrokerException(__('Placeholders like [name p-…] can\'t be used in commands. Use the person\'s pseudonym address, for example p-0123456789@student.'));
             }
 
             return preg_replace_callback(self::PSEUDONYM, function ($m) {
-                $person = Person::where('pseudonym', $m[1])->where('kind', $m[2])->first();
+                $person = Person::where('pseudonym', $m[1])->first();
                 if (! $person) {
                     throw new BrokerException(__(':address isn\'t anyone the broker knows.', ['address' => $m[0]]));
                 }
@@ -80,7 +113,7 @@ class Broker
             return $people[$pseudonym] ??= Person::where('pseudonym', $pseudonym)->first();
         };
 
-        $text = preg_replace_callback('/\[(name|given|family) ([stc]-[0-9a-f]{10})\]/', function ($m) use ($person) {
+        $text = preg_replace_callback('/\[(name|given|family) (p-[0-9a-f]{10})\]/', function ($m) use ($person) {
             foreach (json_decode($person($m[2])?->getRawOriginal('values') ?? '[]', true) ?: [] as [$value, $label]) {
                 if ($label === $m[1]) {
                     return $value;

@@ -17,12 +17,15 @@ use TornadoEngine\Gam\Gam;
 #[Description('Runs a GAM command for the district\'s Google Workspace, through the broker. Give the arguments after "gam" as a list, for example ["info", "user", "s-0123456789@student"] or ["print", "users", "query", "orgUnitPath=\'/Students\'"]. People in the output are replaced with pseudonyms.')]
 class GamTool extends Tool
 {
-    public function __construct(private Broker $broker, private Gam $gam) {}
+    public function __construct(private Broker $broker) {}
 
     public function handle(Request $request): Response
     {
         if ($reason = $this->broker->notReady()) {
             return Response::error($reason);
+        }
+        if (! class_exists(Gam::class)) {
+            return Response::error('GAM isn\'t installed on this Tornado Engine.');
         }
 
         $args = $request->array('args');
@@ -37,7 +40,7 @@ class GamTool extends Tool
         }
 
         try {
-            $result = $this->gam->run($real);
+            $result = app(Gam::class)->run($real);
         } catch (Throwable $e) {
             $this->broker->log('gam', $real, null, false);
             report($e);

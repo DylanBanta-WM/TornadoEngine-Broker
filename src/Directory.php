@@ -3,79 +3,79 @@
 namespace TornadoEngine\Broker;
 
 use App\Models\Setting;
-use Illuminate\Support\Collection;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
+use Throwable;
+use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Models\Person;
-use TornadoEngine\Broker\Models\Rule;
-use TornadoEngine\Gam\Gam;
 
 /**
- * Refreshes the broker's copy of the directory from GAM: who is a student (by the rules) and who
- * is staff, each one's pseudonym, and every value that identifies them.
+ * Who is given a pseudonym: everyone with an account in one of the broker's pseudonym roles.
+ * Their names and emails come from Access; other identifying values from sources modules add
+ * (GAM, Active Directory, Entra ID).
  */
 class Directory
 {
     /** Shortest value worth replacing; shorter ones (like "Al") would replace parts of ordinary words. */
     private const MIN_LENGTH = 3;
 
-    public function __construct(private Gam $gam) {}
+    public function __construct(private Broker $broker) {}
 
     /**
      * @return string A summary for the scheduled job's result.
      */
     public function refresh(): string
     {
-        $rules = Rule::all();
-        if ($rules->isEmpty()) {
-            throw new RuntimeException(__('Add at least one student rule first.'));
+        $roles = Role::whereIn('id', Broker::pseudonymRoleIds())->orderBy('name')->get();
+        $roleOf = [];
+        foreach (DB::table('access_role_user')->whereIn('role_id', $roles->pluck('id'))->get() as $row) {
+            $name = $roles->firstWhere('id', $row->role_id)->name;
+            // The first pseudonym role alphabetically names the pseudonym.
+            if (! isset($roleOf[$row->user_id]) || strcasecmp($name, $roleOf[$row->user_id]) < 0) {
+                $roleOf[$row->user_id] = $name;
+            }
         }
 
-        $users = $this->users();
-        if (! $users) {
-            throw new RuntimeException(__('GAM returned no users.'));
-        }
+        $users = User::whereIn('id', array_keys($roleOf))->get(['id', 'name', 'email']);
+        $emails = $users->pluck('email')->map(fn ($email) => strtolower($email))->all();
 
-        // Each group rule's members: [rule id => [email => true]].
-        $groupMembers = [];
-        foreach ($rules->where('type', 'group') as $rule) {
-            foreach ($this->gam->forJob()->groupMembers($rule->value) as $email) {
-                $groupMembers[$rule->id][$email] = true;
+        // What else identifies them, from each source; a source that fails is skipped (and reported).
+        $extra = [];
+        $failed = [];
+        foreach ($this->broker->sources() as $source => $values) {
+            try {
+                foreach ($values($emails) as $email => $list) {
+                    $extra[strtolower($email)] = array_merge($extra[strtolower($email)] ?? [], $list);
+                }
+            } catch (Throwable $e) {
+                report($e);
+                $failed[] = $source;
             }
         }
 
         $report = [];
         $people = [];
-        $primary = $rules->firstWhere('primary', true);
-        $missed = [];
         foreach ($users as $user) {
-            $email = strtolower((string) ($user['primaryEmail'] ?? ''));
-            if ($email === '') {
-                continue;
+            $email = strtolower($user->email);
+            $values = [[$email, 'email'], [(string) $user->name, 'name']];
+            $parts = preg_split('/\s+/', trim((string) $user->name));
+            if (count($parts) > 1) {
+                $values[] = [$parts[0], 'given'];
+                $values[] = [end($parts), 'family'];
             }
-
-            $matched = $this->matches($user, $email, $rules, $groupMembers);
-            $student = $matched !== [];
-
-            // Caught by another rule but not by the primary one: the primary rule is missing them.
-            if ($student && $primary && ! in_array($primary->id, $matched, true)) {
-                $missed[] = [
-                    'name' => (string) ($user['name']['fullName'] ?? ''),
-                    'email' => $email,
-                    'ou' => (string) ($user['orgUnitPath'] ?? ''),
-                    'suspended' => (bool) ($user['suspended'] ?? false),
-                    'caught_by' => $rules->whereIn('id', $matched)->map(fn (Rule $rule) => ['type' => $rule->type, 'value' => $rule->value])->values()->all(),
-                ];
+            foreach ($extra[$email] ?? [] as [$value, $label]) {
+                $values[] = [trim((string) $value), $label];
+                if (! in_array($label, ['email', 'name', 'given', 'family'], true)) {
+                    $report[$label] = ($report[$label] ?? 0) + 1;
+                }
             }
+            $values = array_values(array_unique(array_filter($values, fn ($v) => mb_strlen($v[0]) >= self::MIN_LENGTH), SORT_REGULAR));
 
-            $values = $this->identifyingValues($user, $student, $report);
-            $kind = $student ? 'student' : 'staff';
-
-            $people[$email] = ['kind' => $kind, 'email' => $email, 'pseudonym' => Pseudonym::for($kind, $email), 'values' => json_encode($values)];
+            $people[$email] = ['kind' => Pseudonym::slug($roleOf[$user->id]), 'email' => $email, 'pseudonym' => Pseudonym::for($email), 'values' => json_encode($values)];
         }
 
         DB::transaction(function () use ($people) {
-            Person::whereIn('kind', ['student', 'staff'])->whereNotIn('email', array_keys($people))->delete();
+            Person::whereNotIn('email', array_keys($people))->delete();
             foreach (array_chunk(array_values($people), 500) as $chunk) {
                 Person::upsert(
                     array_map(fn ($p) => $p + ['created_at' => now(), 'updated_at' => now()], $chunk),
@@ -85,161 +85,11 @@ class Directory
             }
         });
 
-        Setting::put('broker.groups', json_encode(array_column($this->gam->groups(), 'email')));
         Setting::put('broker.report', json_encode($report));
-        Setting::put('broker.missed_by_primary', json_encode($primary ? [
-            'rule' => ['type' => $primary->type, 'value' => $primary->value],
-            'students' => $missed,
-        ] : null));
         Setting::put('broker.refreshed_at', now()->toIso8601String());
+        app(Filter::class)->forget();
 
-        $students = count(array_filter($people, fn ($p) => $p['kind'] === 'student'));
-
-        return __(':students students and :staff staff', ['students' => number_format($students), 'staff' => number_format(count($people) - $students)]);
-    }
-
-    /** @return list<array<string, mixed>> Every user, as GAM's JSON. */
-    private function users(): array
-    {
-        $result = $this->gam->forJob()->run(['print', 'users', 'allfields', 'formatjson']);
-        if ($result['exit'] !== 0) {
-            throw new RuntimeException(trim($result['stderr']) ?: __('GAM failed.'));
-        }
-
-        $lines = preg_split('/\r?\n/', trim($result['stdout']));
-        $header = str_getcsv((string) array_shift($lines), escape: '');
-        $json = array_search('JSON', $header, true);
-
-        $users = [];
-        foreach (array_filter($lines) as $line) {
-            $row = str_getcsv($line, escape: '');
-            $user = json_decode($row[$json === false ? count($row) - 1 : $json] ?? '', true);
-            if (is_array($user)) {
-                $users[] = $user;
-            }
-        }
-
-        return $users;
-    }
-
-    /**
-     * The ids of the rules this person matches. None means staff.
-     *
-     * @param  Collection<int, Rule>  $rules
-     * @param  array<int, array<string, true>>  $groupMembers
-     * @return list<int>
-     */
-    private function matches(array $user, string $email, $rules, array $groupMembers): array
-    {
-        $ou = (string) ($user['orgUnitPath'] ?? '');
-        $addresses = array_merge([$email], array_map('strtolower', $user['aliases'] ?? []));
-        $matched = [];
-
-        foreach ($rules as $rule) {
-            $hit = match ($rule->type) {
-                'group' => isset($groupMembers[$rule->id][$email]),
-                'ou' => strcasecmp($ou, rtrim($rule->value, '/')) === 0
-                    || ($rule->sub_ous && stripos($ou, rtrim($rule->value, '/').'/') === 0),
-                'email' => (bool) array_filter($addresses, fn ($address) => @preg_match('/'.str_replace('/', '\/', $rule->value).'/i', $address) === 1),
-                default => false,
-            };
-
-            if ($hit) {
-                $matched[] = $rule->id;
-            }
-        }
-
-        return $matched;
-    }
-
-    /**
-     * Everything that could identify this person. For students that's every field Google can
-     * hold an ID, phone, address or relation in, so it's covered wherever a district keeps them.
-     *
-     * @param  array<string, int>  $report  Counts of students with a value in each field (no values).
-     * @return list<array{0: string, 1: string}> [value, label]
-     */
-    private function identifyingValues(array $user, bool $student, array &$report): array
-    {
-        $values = [];
-        $add = function (mixed $value, string $label) use (&$values) {
-            if (is_scalar($value) && ! is_bool($value) && mb_strlen(trim((string) $value)) >= self::MIN_LENGTH) {
-                $values[] = [trim((string) $value), $label];
-            }
-        };
-
-        $add($user['primaryEmail'] ?? null, 'email');
-        foreach (array_merge($user['aliases'] ?? [], $user['nonEditableAliases'] ?? []) as $alias) {
-            $add($alias, 'email');
-        }
-        foreach ($user['emails'] ?? [] as $email) {
-            $add($email['address'] ?? null, 'email');
-        }
-        $add($user['name']['fullName'] ?? null, 'name');
-        $add($user['name']['givenName'] ?? null, 'given');
-        $add($user['name']['familyName'] ?? null, 'family');
-
-        if (! $student) {
-            return $values;
-        }
-
-        $fields = [
-            'externalIds' => fn ($item) => [$item['value'] ?? null],
-            'phones' => fn ($item) => [$item['value'] ?? null],
-            'relations' => fn ($item) => [$item['value'] ?? null],
-            'addresses' => fn ($item) => [$item['formatted'] ?? null, $item['streetAddress'] ?? null, $item['poBox'] ?? null, $item['postalCode'] ?? null],
-            'organizations' => fn ($item) => [$item['costCenter'] ?? null, $item['description'] ?? null],
-            'ims' => fn ($item) => [$item['im'] ?? null],
-            'keywords' => fn ($item) => [$item['value'] ?? null],
-            'websites' => fn ($item) => [$item['value'] ?? null],
-        ];
-
-        foreach ($fields as $field => $pick) {
-            $found = false;
-            foreach ($user[$field] ?? [] as $item) {
-                foreach ($pick(is_array($item) ? $item : []) as $value) {
-                    if ($value !== null && $value !== '') {
-                        $add($value, 'id');
-                        $found = true;
-                    }
-                }
-            }
-            if ($found) {
-                $report[$field] = ($report[$field] ?? 0) + 1;
-            }
-        }
-
-        foreach (['recoveryEmail', 'recoveryPhone'] as $field) {
-            if (! empty($user[$field])) {
-                $add($user[$field], 'id');
-                $report[$field] = ($report[$field] ?? 0) + 1;
-            }
-        }
-
-        foreach ($user['customSchemas'] ?? [] as $schema => $schemaFields) {
-            foreach ((array) $schemaFields as $name => $value) {
-                $leaves = [];
-                if (is_array($value)) {
-                    array_walk_recursive($value, function ($leaf) use (&$leaves) {
-                        $leaves[] = $leaf;
-                    });
-                } else {
-                    $leaves = [$value];
-                }
-                $leaves = array_filter($leaves, fn ($leaf) => $leaf !== null && $leaf !== '' && ! is_bool($leaf));
-                foreach ($leaves as $leaf) {
-                    $add($leaf, 'id');
-                }
-                if ($leaves) {
-                    $report["customSchemas.{$schema}.{$name}"] = ($report["customSchemas.{$schema}.{$name}"] ?? 0) + 1;
-                }
-            }
-        }
-
-        if (! empty($user['notes']['value'])) {
-            $add($user['notes']['value'], 'id');
-        }
-
-        return $values;
+        return trans_choice(':count person given a pseudonym.|:count people given pseudonyms.', count($people), ['count' => number_format(count($people))])
+            .($failed ? ' '.__('Couldn\'t read: :sources.', ['sources' => implode(', ', $failed)]) : '');
     }
 }

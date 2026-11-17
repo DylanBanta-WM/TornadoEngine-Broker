@@ -1,14 +1,14 @@
 {
     "name": "tornado-engine/broker",
-    "description": "Tornado Engine module: lets Claude work with directory data through pseudonyms, so no student information reaches it.",
+    "description": "Tornado Engine core-module: people in chosen roles reach Claude only as pseudonyms.",
     "type": "library",
     "license": "MIT",
     "require": {
         "php": "^8.4",
         "illuminate/support": "^13.0",
         "laravel/mcp": "^1.1.2",
-        "tornado-engine/gam": ">=0.5",
-        "tornado-engine/cron": ">=0.4"
+        "tornado-engine/cron": ">=0.6",
+        "tornado-engine/access": ">=0.8"
     },
     "autoload": {
         "psr-4": {
@@ -18,13 +18,13 @@
     "extra": {
         "tornado": {
             "name": "Broker",
-            "core": ">=0.6",
-            "core-module": false,
+            "core": ">=0.16",
+            "core-module": true,
             "provider": "TornadoEngine\\Broker\\BrokerServiceProvider",
             "settings": "/administration/broker"
         },
         "branch-alias": {
-            "dev-main": "0.8.x-dev"
+            "dev-main": "0.9.x-dev"
         }
     }
 }

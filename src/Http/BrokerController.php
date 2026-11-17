@@ -2,64 +2,25 @@
 
 namespace TornadoEngine\Broker\Http;
 
+use App\Models\Setting;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Illuminate\Validation\Rule as ValidationRule;
 use Illuminate\View\View;
+use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Directory;
 use TornadoEngine\Broker\Models\LogEntry;
-use TornadoEngine\Broker\Models\Rule;
 use TornadoEngine\Cron\Cron;
 
 class BrokerController extends Controller
 {
-    public function addRule(Request $request): RedirectResponse
+    /** The roles whose people are given pseudonyms. */
+    public function roles(Request $request): RedirectResponse
     {
-        $data = $request->validate([
-            'type' => ['required', ValidationRule::in(['ou', 'group', 'email'])],
-            'value' => ['required', 'string', 'max:255', function ($attribute, $value, $fail) use ($request) {
-                $problem = match ($request->input('type')) {
-                    'ou' => str_starts_with($value, '/') ? null : __('An OU path starts with /, for example /Students.'),
-                    'group' => filter_var($value, FILTER_VALIDATE_EMAIL) ? null : __('Use the group\'s email address.'),
-                    'email' => @preg_match('/'.str_replace('/', '\/', $value).'/', '') === false ? __('That isn\'t a valid regular expression.') : null,
-                    default => null,
-                };
-                if ($problem) {
-                    $fail($problem);
-                }
-            }],
-        ]);
+        $ids = array_map('intval', (array) $request->input('roles', []));
+        Setting::put('broker.pseudonym_roles', json_encode(array_values(array_intersect(Role::pluck('id')->all(), $ids))));
 
-        Rule::create([
-            'type' => $data['type'],
-            'value' => $data['type'] === 'group' ? strtolower($data['value']) : $data['value'],
-            'sub_ous' => $request->boolean('sub_ous'),
-        ]);
-
-        return back()->with('broker_status', __('Added the rule. Click Refresh now to apply it.'));
-    }
-
-    /**
-     * Makes this the primary rule, or stops it being primary. There's at most one.
-     */
-    public function primary(Rule $rule): RedirectResponse
-    {
-        $makePrimary = ! $rule->primary;
-
-        Rule::query()->update(['primary' => false]);
-        $rule->update(['primary' => $makePrimary]);
-
-        return back()->with('broker_status', $makePrimary
-            ? __('That\'s now your primary rule. Click Refresh now to check the others against it.')
-            : __('You have no primary rule now, so rules aren\'t compared.'));
-    }
-
-    public function removeRule(Rule $rule): RedirectResponse
-    {
-        $rule->delete();
-
-        return back()->with('broker_status', __('Removed the rule. Click Refresh now to apply it.'));
+        return back()->with('broker_status', __('Saved. Click Refresh now to apply it.'));
     }
 
     public function refresh(Cron $cron, Directory $directory): RedirectResponse

@@ -12,7 +12,7 @@ use TornadoEngine\Broker\Broker;
 use TornadoEngine\Broker\Models\Person;
 
 #[Name('broker_info')]
-#[Description('Whether the broker is ready, how many people its directory holds, and how pseudonyms look.')]
+#[Description('Whether the broker is ready, how many people are given pseudonyms (by role), and how pseudonyms look.')]
 class BrokerInfoTool extends Tool
 {
     public function __construct(private Broker $broker) {}
@@ -24,8 +24,8 @@ class BrokerInfoTool extends Tool
         return Response::text(implode("\n", [
             'Ready: '.($this->broker->notReady() ?? 'yes'),
             'Directory refreshed: '.(Setting::get('broker.refreshed_at') ?? 'never'),
-            'Students: '.($counts['student'] ?? 0).', staff: '.($counts['staff'] ?? 0).', contacts: '.($counts['contact'] ?? 0),
-            'Pseudonyms: s-<10 hex>@student, t-<10 hex>@staff, c-<10 hex>@contact.',
+            'People given pseudonyms: '.($counts->isEmpty() ? 'none' : $counts->map(fn ($total, $kind) => "{$total} @{$kind}")->implode(', ')),
+            'Pseudonyms look like p-<10 hex>@<role>.',
         ]));
     }
 }

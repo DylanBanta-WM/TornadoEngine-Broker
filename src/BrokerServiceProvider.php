@@ -28,7 +28,7 @@ class BrokerServiceProvider extends ServiceProvider
         // Pages Claude opens through the harness show pseudonyms, and only once the broker is set up.
         $view->filter(fn (string $text) => $broker->filter($text), ready: fn () => $broker->ready());
 
-        // Claude's tools: GAM through the broker.
+        // Claude's tools: GAM (when it's installed) through the broker.
         $mcp->server('tornado-broker', '/mcp/broker');
 
         $this->callAfterResolving(Cron::class, function (Cron $cron) {
@@ -37,7 +37,7 @@ class BrokerServiceProvider extends ServiceProvider
                 app(Filter::class)->forget();
 
                 return $summary;
-            }, schedule: '0 2 * * *', description: __('Updates who the broker treats as a student, from GAM.'));
+            }, schedule: '0 3 * * *', description: __('Updates who is given a pseudonym (by role) and what identifies them.'));
         });
     }
 }

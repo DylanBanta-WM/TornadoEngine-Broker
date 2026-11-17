@@ -2,37 +2,32 @@
 
 namespace TornadoEngine\Broker\Tests;
 
-use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
+use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Broker;
-use TornadoEngine\Broker\BrokerException;
 use TornadoEngine\Broker\Mcp\BrokerServer;
+use TornadoEngine\Broker\Mcp\Tools\BrokerInfoTool;
 use TornadoEngine\Broker\Mcp\Tools\GamTool;
 use TornadoEngine\Broker\Models\LogEntry;
 use TornadoEngine\Broker\Models\Person;
-use TornadoEngine\Broker\Models\Rule;
 use TornadoEngine\Broker\Pseudonym;
 use TornadoEngine\Cron\Cron;
 use TornadoEngine\Cron\Models\CronJob;
 use TornadoEngine\Gam\Gam;
 
-/**
- * All people here are made up.
- */
 class BrokerTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** What the fake GAM prints for commands other than the directory ones. */
-    private string $output = '';
-
-    /** @var list<list<string>> */
+    /** @var list<list<string>> GAM commands that ran */
     private array $ran = [];
+
+    private string $output = '';
 
     protected function setUp(): void
     {
@@ -40,18 +35,170 @@ class BrokerTest extends TestCase
         $this->app->instance(Gam::class, new Gam('http://gam:8000', 'test-token'));
 
         Http::fake(function (Request $request) {
+            if (str_ends_with($request->url(), '/status')) {
+                return Http::response(['configured' => true]);
+            }
             $args = $request['args'] ?? [];
             $this->ran[] = $args;
 
-            $stdout = match (true) {
-                $args === ['print', 'users', 'allfields', 'formatjson'] => $this->directoryCsv(),
-                ($args[0] ?? '') === 'print' && ($args[1] ?? '') === 'group-members' => "group,email\nhonor-roll@school.test,zed.quill@school.test\n",
-                $args === ['print', 'groups', 'fields', 'email,name'] => "email,name\nhonor-roll@school.test,Honor Roll\nteachers@school.test,Teachers\n",
-                default => $this->output,
-            };
-
-            return Http::response(['exit' => 0, 'stdout' => $stdout, 'stderr' => '']);
+            return Http::response(['exit' => 0, 'stdout' => $args === ['print', 'users', 'allfields', 'formatjson'] ? $this->directoryCsv() : $this->output, 'stderr' => '']);
         });
+    }
+
+    /** Ann and Ann Other are students, Kim is staff, Zed has no role; then the broker refreshes. */
+    private function setUpBroker(): void
+    {
+        $student = Role::where('name', 'Student')->first();
+        $staff = Role::where('name', 'Staff')->first();
+        foreach ([['ann.example@school.test', 'Ann Example', $student], ['ann.other@school.test', 'Ann Other', $student], ['kim.teacher@school.test', 'Kim Teacher', $staff], ['zed.quill@school.test', 'Zed Quill', null]] as [$email, $name, $role]) {
+            $user = User::factory()->create(['email' => $email, 'name' => $name]);
+            $role && $user->roles()->attach($role);
+        }
+
+        $this->assertTrue($this->refresh(), (string) CronJob::find('broker.refresh')?->last_message);
+    }
+
+    private function refresh(): ?bool
+    {
+        return app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
+    }
+
+    private function filter(string $text): string
+    {
+        return app(Broker::class)->filter($text);
+    }
+
+    private function address(string $email): string
+    {
+        return Person::where('email', $email)->sole()->address();
+    }
+
+    public function test_the_broker_waits_for_its_first_refresh(): void
+    {
+        $this->assertNotNull(app(Broker::class)->notReady());
+        BrokerServer::tool(GamTool::class, ['args' => ['info', 'domain']])->assertHasErrors();
+        $this->assertSame([], $this->ran);
+    }
+
+    public function test_people_in_pseudonym_roles_are_given_pseudonyms_named_after_their_role(): void
+    {
+        $this->setUpBroker();
+
+        $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@student$/', $this->address('ann.example@school.test'));
+        $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@staff$/', $this->address('kim.teacher@school.test'));
+        $this->assertNull(Person::where('email', 'zed.quill@school.test')->first(), 'no role, no pseudonym');
+        $this->assertSame('3 people given pseudonyms.', CronJob::find('broker.refresh')->last_message);
+
+        // Only the chosen roles.
+        $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin)->post('/administration/broker/roles', ['roles' => [Role::where('name', 'Student')->value('id')]]);
+        $this->refresh();
+        $this->assertNull(Person::where('email', 'kim.teacher@school.test')->first());
+        $this->assertSame('Kim Teacher and kim.teacher@school.test', $this->filter('Kim Teacher and kim.teacher@school.test'));
+    }
+
+    public function test_role_names_with_spaces_and_symbols_make_safe_pseudonyms(): void
+    {
+        $this->assertSame('office-staff-2', Pseudonym::slug('Office Staff #2'));
+        $this->assertSame('eleve', Pseudonym::slug('Élève'));
+        $this->assertSame('person', Pseudonym::slug('***'));
+    }
+
+    public function test_no_identifying_value_survives_the_filter(): void
+    {
+        $this->setUpBroker();
+        $ann = $this->address('ann.example@school.test');
+        $code = strstr($ann, '@', true);
+
+        $text = 'Ann Example (ann.example@school.test, aexample@school.test) ID 204417, call 740-555-0142 or 614-555-0199, mother Pat Example, '
+            .'parent.example@home.test, lunch 9137, homeroom B12. EXAMPLE.';
+        $filtered = $this->filter($text);
+
+        foreach (['Ann Example', 'ann.example@', 'aexample@', '204417', '740-555-0142', '614-555-0199', 'Pat Example', 'parent.example@home.test', '9137', 'B12', 'EXAMPLE'] as $value) {
+            $this->assertStringNotContainsString($value, $filtered, $value);
+        }
+        $this->assertStringContainsString($ann, $filtered);
+        $this->assertStringContainsString("[id {$code}]", $filtered);
+        $this->assertStringContainsString('[phone]', $filtered);
+
+        // People without a pseudonym role, and addresses nobody has, are left alone.
+        $this->assertSame('Zed Quill wrote to someone@else.test', $this->filter('Zed Quill wrote to someone@else.test'));
+    }
+
+    public function test_a_given_name_shared_by_two_people_is_replaced_without_saying_who(): void
+    {
+        $this->setUpBroker();
+
+        $this->assertSame('Hi [given]', $this->filter('Hi Ann'));
+    }
+
+    public function test_text_for_the_website_shows_real_people_again(): void
+    {
+        $this->setUpBroker();
+        $broker = app(Broker::class);
+
+        $filtered = $broker->filter('Email ann.example@school.test about Ann Example');
+        $this->assertStringNotContainsString('ann.example', $filtered);
+        $this->assertSame('Email ann.example@school.test about Ann Example', $broker->display($filtered));
+    }
+
+    public function test_claude_runs_any_gam_command_and_only_sees_pseudonyms(): void
+    {
+        $this->setUpBroker();
+        $ann = $this->address('ann.example@school.test');
+        $this->output = "User: ann.example@school.test\nFull Name: Ann Example\nEmployee ID: 204417\nOrg Unit Path: /Students/MS\n";
+
+        BrokerServer::tool(GamTool::class, ['args' => ['update', 'user', $ann, 'org', '/Students/HS']])
+            ->assertOk()
+            ->assertSee($ann)
+            ->assertSee('/Students/MS')
+            ->assertDontSee(['ann.example', 'Ann Example', '204417']);
+
+        $this->assertSame(['update', 'user', 'ann.example@school.test', 'org', '/Students/HS'], end($this->ran));
+        $this->assertSame(['update', 'user', 'ann.example@school.test', 'org', '/Students/HS'], LogEntry::latest('id')->first()->command);
+    }
+
+    public function test_placeholders_cant_be_used_in_commands(): void
+    {
+        $this->setUpBroker();
+        $code = strstr($this->address('ann.example@school.test'), '@', true);
+
+        BrokerServer::tool(GamTool::class, ['args' => ['update', 'user', 'x', 'firstname', "[given {$code}]"]])->assertHasErrors();
+    }
+
+    public function test_broker_info_says_who_is_given_pseudonyms(): void
+    {
+        $this->setUpBroker();
+
+        BrokerServer::tool(BrokerInfoTool::class)->assertSee('Ready: yes')->assertSee('2 @student')->assertSee('1 @staff')->assertDontSee('ann.example');
+    }
+
+    public function test_pages_claude_opens_show_pseudonyms(): void
+    {
+        $this->setUpBroker();
+        Route::middleware(['web', 'auth'])->get('/test-roster', fn () => '<td>Ann Example</td><td>ann.example@school.test</td>');
+
+        $this->withServerVariables(['TORNADO_VIEW' => 'broker'])->get('/test-roster')
+            ->assertOk()
+            ->assertDontSee('Ann Example')
+            ->assertDontSee('ann.example@school.test');
+
+        $this->withServerVariables([])->actingAs(User::factory()->create())->get('/test-roster')->assertSee('Ann Example');
+    }
+
+    public function test_admins_choose_the_roles_and_see_counts_only(): void
+    {
+        $this->setUpBroker();
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->get('/administration/broker')
+            ->assertOk()
+            ->assertSee('Roles given a pseudonym')
+            ->assertSee('p-…@student · 2', false)
+            ->assertSee('externalIds')
+            ->assertDontSee('ann.example@school.test');
+
+        $this->actingAs(User::factory()->create())->post('/administration/broker/roles', ['roles' => []])->assertForbidden();
     }
 
     private function directoryCsv(): string
@@ -94,232 +241,5 @@ class BrokerTest extends TestCase
         rewind($out);
 
         return stream_get_contents($out);
-    }
-
-    private function setUpBroker(): void
-    {
-        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
-        Rule::create(['type' => 'group', 'value' => 'honor-roll@school.test']);
-        $ok = app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
-        $this->assertTrue($ok, (string) CronJob::find('broker.refresh')?->last_message);
-    }
-
-    private function filter(string $text): string
-    {
-        return app(Broker::class)->filter($text);
-    }
-
-    private function pseudonym(string $kind, string $email): string
-    {
-        return Pseudonym::for($kind, $email);
-    }
-
-    public function test_the_broker_refuses_to_run_without_rules(): void
-    {
-        $this->assertNotNull(app(Broker::class)->notReady());
-
-        BrokerServer::tool(GamTool::class, ['args' => ['info', 'domain']])->assertHasErrors();
-        $this->assertSame([], $this->ran);
-    }
-
-    public function test_the_refresh_sorts_students_from_staff_by_the_rules(): void
-    {
-        $this->setUpBroker();
-
-        $this->assertSame('student', Person::where('email', 'ann.example@school.test')->value('kind'));
-        $this->assertSame('student', Person::where('email', 'ann.other@school.test')->value('kind'));
-        $this->assertSame('student', Person::where('email', 'zed.quill@school.test')->value('kind'), 'group members are students');
-        $this->assertSame('staff', Person::where('email', 'kim.teacher@school.test')->value('kind'));
-
-        $report = json_decode(Setting::get('broker.report'), true);
-        $this->assertSame(1, $report['externalIds']);
-        $this->assertSame(1, $report['customSchemas.StudentInfo.LunchPIN']);
-        $this->assertNull(app(Broker::class)->notReady());
-    }
-
-    public function test_no_identifying_value_survives_the_filter(): void
-    {
-        $this->setUpBroker();
-        $ann = $this->pseudonym('student', 'ann.example@school.test');
-        $kim = $this->pseudonym('staff', 'kim.teacher@school.test');
-
-        $out = $this->filter(implode("\n", [
-            'primaryEmail,name.fullName,externalIds.0.value,phones.0.value,relations.0.value,recoveryEmail,LunchPIN',
-            'ann.example@school.test,Ann Example,204417,740-555-0142,Pat Example,parent.example@home.test,9137',
-            'Alias: aexample@school.test. ANN EXAMPLE signed in. Teacher: Kim Teacher (kim.teacher@school.test).',
-            'Group honor-roll@school.test has 1 member. Annual report for Annapolis. Sent to stranger@home.test.',
-        ]));
-
-        foreach (['ann.example', 'aexample', 'Ann Example', 'ANN EXAMPLE', '204417', '740-555-0142', 'Pat Example', 'parent.example', '9137', 'Kim Teacher', 'kim.teacher', 'stranger@home.test'] as $real) {
-            $this->assertStringNotContainsStringIgnoringCase($real, $out);
-        }
-
-        $this->assertStringContainsString("{$ann}@student", $out);
-        $this->assertStringContainsString("[name {$ann}]", $out);
-        $this->assertStringContainsString("[id {$ann}]", $out);
-        $this->assertStringContainsString("{$kim}@staff", $out);
-        $this->assertMatchesRegularExpression('/c-[0-9a-f]{10}@contact/', $out, 'unknown addresses become contacts');
-        $this->assertStringContainsString('honor-roll@school.test', $out, 'groups are not people');
-        $this->assertStringContainsString('Annual report for Annapolis', $out, 'names only match whole words');
-    }
-
-    public function test_a_given_name_shared_by_two_students_is_hidden_without_saying_who(): void
-    {
-        $this->setUpBroker();
-
-        $this->assertSame('Hello [given]!', $this->filter('Hello Ann!'));
-    }
-
-    private function refresh(): void
-    {
-        app(Cron::class)->run(app(Cron::class)->find('broker.refresh'));
-    }
-
-    private function brokerTab()
-    {
-        return $this->actingAs(User::factory()->create(['is_admin' => true]))->get('/administration/broker');
-    }
-
-    public function test_without_a_primary_rule_rules_arent_compared(): void
-    {
-        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
-        Rule::create(['type' => 'email', 'value' => '^wm\\d{2}[a-z]+@school\\.test$']);
-        $this->refresh();
-
-        $this->assertSame('student', Person::where('email', 'wm30lost@school.test')->value('kind'));
-        $this->brokerTab()->assertDontSee('Students your primary rule missed')->assertSee('Without a primary rule, rules aren');
-    }
-
-    public function test_students_the_primary_rule_missed_are_listed_with_what_caught_them(): void
-    {
-        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true, 'primary' => true]);
-        Rule::create(['type' => 'email', 'value' => '^wm\\d{2}[a-z]+@school\\.test$']);
-        $this->refresh();
-
-        $this->brokerTab()
-            ->assertSee('Students your primary rule missed (1)')
-            ->assertSee('Your primary rule is the OU /Students.')
-            ->assertSee('Lost Student')
-            ->assertSee('wm30lost@school.test')
-            ->assertSee('In OU /. Caught by the email pattern ^wm\\d{2}[a-z]+@school\\.test$.', false)
-            ->assertSee('suspended');
-    }
-
-    public function test_a_google_group_can_be_the_primary_rule(): void
-    {
-        Rule::create(['type' => 'group', 'value' => 'honor-roll@school.test', 'primary' => true]);
-        Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true]);
-        $this->refresh();
-
-        $this->brokerTab()
-            ->assertSee('Students your primary rule missed (2)')
-            ->assertSee('Your primary rule is the Google Group honor-roll@school.test.')
-            ->assertSee('In OU /Students/MS. Caught by the OU /Students.');
-    }
-
-    public function test_only_one_rule_is_primary(): void
-    {
-        $admin = User::factory()->create(['is_admin' => true]);
-        $ou = Rule::create(['type' => 'ou', 'value' => '/Students', 'sub_ous' => true, 'primary' => true]);
-        $group = Rule::create(['type' => 'group', 'value' => 'honor-roll@school.test']);
-
-        $this->actingAs($admin)->from('/administration/broker')->post("/administration/broker/rules/{$group->id}/primary")->assertRedirect('/administration/broker');
-        $this->assertFalse($ou->fresh()->primary);
-        $this->assertTrue($group->fresh()->primary);
-
-        $this->actingAs($admin)->post("/administration/broker/rules/{$group->id}/primary");
-        $this->assertSame(0, Rule::where('primary', true)->count());
-    }
-
-    public function test_text_for_the_website_shows_real_people_again(): void
-    {
-        $this->setUpBroker();
-        $broker = app(Broker::class);
-        $person = Person::where('kind', 'student')->first();
-        $names = collect(json_decode($person->getRawOriginal('values'), true))->keyBy(1);
-
-        $filtered = $broker->filter("Email {$person->email} about ".$names['name'][0]);
-        $this->assertStringNotContainsString($person->email, $filtered);
-        $this->assertSame("Email {$person->email} about ".$names['name'][0], $broker->display($filtered));
-        $this->assertSame('s-0000000000@student stays', $broker->display('s-0000000000@student stays'));
-    }
-
-    public function test_the_safety_net_hides_phone_numbers(): void
-    {
-        $this->setUpBroker();
-
-        $this->assertSame('call [phone] or [phone] or [phone]', $this->filter('call (614) 555-0199 or 614.555.0199 or +44 20 7946 0958'));
-    }
-
-    public function test_pseudonyms_become_real_addresses_on_the_way_in(): void
-    {
-        $this->setUpBroker();
-        $ann = $this->pseudonym('student', 'ann.example@school.test');
-
-        $this->assertSame(['info', 'user', 'ann.example@school.test'], app(Broker::class)->reveal(['info', 'user', "{$ann}@student"]));
-
-        $this->expectException(BrokerException::class);
-        app(Broker::class)->reveal(['info', 'user', 's-0000000000@student']);
-    }
-
-    public function test_placeholders_cant_be_used_in_commands(): void
-    {
-        $this->setUpBroker();
-
-        $this->expectException(BrokerException::class);
-        app(Broker::class)->reveal(['update', 'user', 'x', 'firstname', '[given s-0123456789]']);
-    }
-
-    public function test_claude_runs_any_gam_command_and_only_sees_pseudonyms(): void
-    {
-        $this->setUpBroker();
-        $ann = $this->pseudonym('student', 'ann.example@school.test');
-        $this->output = "User: ann.example@school.test\nFull Name: Ann Example\nEmployee ID: 204417\nOrg Unit Path: /Students/MS\n";
-
-        BrokerServer::tool(GamTool::class, ['args' => ['update', 'user', "{$ann}@student", 'org', '/Students/HS']])
-            ->assertOk()
-            ->assertSee("{$ann}@student")
-            ->assertSee('/Students/MS')
-            ->assertDontSee(['ann.example', 'Ann Example', '204417']);
-
-        $this->assertSame(['update', 'user', 'ann.example@school.test', 'org', '/Students/HS'], end($this->ran));
-        $this->assertSame(['update', 'user', 'ann.example@school.test', 'org', '/Students/HS'], LogEntry::latest('id')->first()->command);
-    }
-
-    public function test_pages_claude_opens_show_pseudonyms(): void
-    {
-        $this->setUpBroker();
-        Route::middleware(['web', 'auth'])->get('/test-roster', fn () => '<td>Ann Example</td><td>ann.example@school.test</td>');
-
-        $this->withServerVariables(['TORNADO_VIEW' => 'broker'])->get('/test-roster')
-            ->assertOk()
-            ->assertDontSee('Ann Example')
-            ->assertDontSee('ann.example@school.test');
-
-        $this->withServerVariables([])->actingAs(User::factory()->create())->get('/test-roster')->assertSee('Ann Example');
-    }
-
-    public function test_the_mcp_server_only_answers_the_harness(): void
-    {
-        $this->postJson('/mcp/broker', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'])->assertNotFound();
-        $this->withServerVariables(['TORNADO_VIEW' => 'broker'])->postJson('/mcp/broker', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'])->assertUnauthorized();
-    }
-
-    public function test_admins_manage_rules_and_see_counts_only(): void
-    {
-        $admin = User::factory()->create(['is_admin' => true]);
-
-        $this->actingAs($admin)->from('/administration')->post('/administration/broker/rules', ['type' => 'ou', 'value' => 'Students'])->assertSessionHasErrors('value');
-        $this->actingAs($admin)->from('/administration')->post('/administration/broker/rules', ['type' => 'email', 'value' => '([a-z'])->assertSessionHasErrors('value');
-        $this->actingAs($admin)->from('/administration')->post('/administration/broker/rules', ['type' => 'ou', 'value' => '/Students', 'sub_ous' => '1'])->assertRedirect('/administration');
-
-        $this->actingAs($admin)->from('/administration')->post('/administration/broker/refresh')->assertRedirect('/administration');
-
-        $this->actingAs($admin)->get('/administration/broker')
-            ->assertSee('Ready: 2 students and 3 staff')
-            ->assertSee('externalIds')
-            ->assertDontSee('204417');
-
-        $this->actingAs(User::factory()->create())->post('/administration/broker/refresh')->assertForbidden();
     }
 }

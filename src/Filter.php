@@ -2,7 +2,6 @@
 
 namespace TornadoEngine\Broker;
 
-use App\Models\Setting;
 use TornadoEngine\Broker\Models\Person;
 
 /**
@@ -12,9 +11,7 @@ use TornadoEngine\Broker\Models\Person;
 class Filter
 {
     /** Pseudonyms and placeholders the filter writes; the safety net leaves them alone. */
-    private const WRITTEN = '/[stc]-[0-9a-f]{10}@(?:student|staff|contact)|\[(?:name|given|family|id) [stc]-[0-9a-f]{10}\]|\[(?:name|given|family|id|phone)\]/';
-
-    private const EMAIL = '/[A-Za-z0-9._%+\'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/';
+    private const WRITTEN = '/p-[0-9a-f]{10}@[a-z0-9-]+|\[(?:name|given|family|id) p-[0-9a-f]{10}\]|\[(?:name|given|family|id|phone)\]/';
 
     /** Phone numbers: (614) 555-0199, 614-555-0199, 614.555.0199, +1 614 555 0199, and international ones with a +. */
     private const PHONE = '/(?<![\w-])(?:\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w-])|(?<![\w-])\+\d[\d\s().-]{7,}\d(?![\w-])/';
@@ -24,9 +21,6 @@ class Filter
 
     /** @var array<string, string>|null lower-case name (full, given or family) => replacement, matched as whole words in any case */
     private ?array $words = null;
-
-    /** @var array<string, true>|null */
-    private ?array $groups = null;
 
     public function apply(string $text): string
     {
@@ -51,7 +45,7 @@ class Filter
      */
     public function forget(): void
     {
-        $this->exact = $this->words = $this->groups = null;
+        $this->exact = $this->words = null;
     }
 
     private function safetyNet(string $text): string
@@ -70,31 +64,7 @@ class Filter
 
     private function scrub(string $text): string
     {
-        $text = preg_replace_callback(self::EMAIL, function ($m) {
-            $email = strtolower($m[0]);
-
-            return isset($this->groups[$email]) ? $m[0] : $this->contact($email);
-        }, $text) ?? $text;
-
-        $text = preg_replace(self::PHONE, '[phone]', $text) ?? $text;
-
-        return $text;
-    }
-
-    /**
-     * An address the directory doesn't know (often a parent): it becomes a contact.
-     */
-    private function contact(string $email): string
-    {
-        $person = Person::firstOrCreate(['email' => $email], [
-            'kind' => 'contact',
-            'pseudonym' => Pseudonym::for('contact', $email),
-            'values' => [[$email, 'email']],
-        ]);
-
-        $this->exact[$email] = $person->address();
-
-        return $person->address();
+        return preg_replace(self::PHONE, '[phone]', $text) ?? $text;
     }
 
     private function load(): void
@@ -122,6 +92,5 @@ class Filter
         uksort($words, fn ($a, $b) => mb_strlen($b) <=> mb_strlen($a));
         $this->exact = $exact;
         $this->words = $words;
-        $this->groups = array_fill_keys(array_map('strtolower', json_decode(Setting::get('broker.groups') ?? '[]', true)), true);
     }
 }
