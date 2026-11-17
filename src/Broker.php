@@ -79,6 +79,19 @@ class Broker
     }
 
     /**
+     * Many short texts at once (for example the words in an image), with one check for changed people.
+     *
+     * @param  array<array-key, string>  $texts
+     * @return array<array-key, string>
+     */
+    public function filterEach(array $texts): array
+    {
+        $this->filter->sync();
+
+        return array_map(fn ($text) => $this->filter->apply((string) $text, sync: false), $texts);
+    }
+
+    /**
      * Swaps pseudonyms in Claude's arguments for the real addresses.
      *
      * @param  list<string>  $args

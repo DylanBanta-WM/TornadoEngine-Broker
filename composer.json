@@ -18,13 +18,13 @@
     "extra": {
         "tornado": {
             "name": "Broker",
-            "core": ">=0.16",
+            "core": ">=0.21",
             "core-module": true,
             "provider": "TornadoEngine\\Broker\\BrokerServiceProvider",
             "settings": "/administration/broker"
         },
         "branch-alias": {
-            "dev-main": "0.10.x-dev"
+            "dev-main": "0.11.x-dev"
         }
     }
 }

@@ -22,20 +22,15 @@ class Filter
     /** @var array<string, string>|null lower-case name (full, given or family) => replacement, matched as whole words in any case */
     private ?array $words = null;
 
-    public function apply(string $text): string
+    public function apply(string $text, bool $sync = true): string
     {
         if ($text === '') {
             return $text;
         }
 
         // Pick up anyone added or changed since the broker last looked; if that fails, nothing passes.
-        try {
-            app(Directory::class)->syncIfChanged();
-        } catch (BrokerException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
-            report($e);
-            throw new BrokerException(__('The broker couldn\'t update who gets pseudonyms, so nothing was passed to Claude.'));
+        if ($sync) {
+            $this->sync();
         }
 
         $this->load();
@@ -53,6 +48,19 @@ class Filter
     /**
      * Forget the loaded directory, after a refresh.
      */
+    /** Picks up anyone added or changed since the broker last looked; if that fails, nothing passes. */
+    public function sync(): void
+    {
+        try {
+            app(Directory::class)->syncIfChanged();
+        } catch (BrokerException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            report($e);
+            throw new BrokerException(__('The broker couldn\'t update who gets pseudonyms, so nothing was passed to Claude.'));
+        }
+    }
+
     public function forget(): void
     {
         $this->exact = $this->words = null;
