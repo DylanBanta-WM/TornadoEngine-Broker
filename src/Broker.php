@@ -135,10 +135,10 @@ class Broker
             return $people[$pseudonym] ??= Person::where('pseudonym', $pseudonym)->first();
         };
 
-        // One person's name parts: [name p-…], [given p-…], [family p-…].
-        $text = preg_replace_callback('/\[(name|given|family) (p-[0-9a-f]{10})\]/', function ($m) use ($person) {
+        // One person's name parts: [name p-…], [given p-…], [family p-…] (with a code when they have more than one).
+        $text = preg_replace_callback('/\[(name|given|family) (p-[0-9a-f]{10})(?:-([0-9a-f]{4}))?\]/', function ($m) use ($person) {
             foreach ($person($m[2])?->values ?? [] as [$value, $label]) {
-                if ($label === $m[1]) {
+                if ($label === $m[1] && (($m[3] ?? '') === '' || Value::short(mb_strtolower((string) $value)) === $m[3])) {
                     return $value;
                 }
             }

@@ -199,7 +199,10 @@ class Filter
         foreach ($owners['word'] ?? [] as $key => $who) {
             [$value, $label] = reset($who);
             if (count($who) === 1) {
-                $words[$key] = "[{$label} ".array_key_first($who).']';
+                // Someone with two values for one part (a hyphenated family name and a short one) gets a code for each.
+                $owner = $people[array_key_first($who)];
+                $several = count(array_unique(array_map(fn ($v) => mb_strtolower($v[0]), array_filter($owner->values, fn ($v) => $v[1] === $label)))) > 1;
+                $words[$key] = "[{$label} ".$owner->pseudonym.($several ? '-'.Value::short($key) : '').']';
             } else {
                 $words[$key] = Value::token($value, $label);
                 $shared[] = [$value, $label];
