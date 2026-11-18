@@ -125,7 +125,7 @@ class BrokerTest extends TestCase
 
         // Everything taken out can be put back for people.
         $shown = app(Broker::class)->display($filtered);
-        foreach (['Ann Example', 'ann.example@school.test', '204417', '740-555-0142', '614-555-0199', 'Pat Example', 'parent.example@home.test', '9137', 'B12'] as $value) {
+        foreach (['Ann Example', 'ann.example@school.test', 'aexample@school.test', '204417', '740-555-0142', '614-555-0199', 'Pat Example', 'parent.example@home.test', '9137', 'B12'] as $value) {
             $this->assertStringContainsString($value, $shown, $value);
         }
         $this->assertStringNotContainsString('[', $shown);

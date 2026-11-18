@@ -15,7 +15,7 @@ class Broker
 {
     private const PSEUDONYM = '/\b(p-[0-9a-f]{10})@([a-z0-9-]+)\b/';
 
-    private const PLACEHOLDER = '/\[(?:name|given|family|id|phone)(?: (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10}))?\]/';
+    private const PLACEHOLDER = '/\[(?:name|given|family|id|email|phone)(?: (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10}))?\]/';
 
     /** @var array<string, Closure(list<string>): array<string, list<array{0: string, 1: string}>>> */
     private array $sources = [];
@@ -146,10 +146,11 @@ class Broker
             return $m[0];
         }, $text) ?? $text;
 
-        // One person's other values: [id p-…-ab12].
-        $text = preg_replace_callback('/\[id (p-[0-9a-f]{10})-([0-9a-f]{4})\]/', function ($m) use ($person) {
-            foreach ($person($m[1])?->values ?? [] as [$value]) {
-                if (Value::short((string) $value) === $m[2]) {
+        // One person's other values: [id p-…-ab12], and their other addresses: [email p-…-ab12].
+        $text = preg_replace_callback('/\[(id|email) (p-[0-9a-f]{10})-([0-9a-f]{4})\]/', function ($m) use ($person) {
+            foreach ($person($m[2])?->values ?? [] as [$value, $label]) {
+                $compare = $label === 'email' ? strtolower((string) $value) : (string) $value;
+                if (($label === 'email') === ($m[1] === 'email') && Value::short($compare) === $m[3]) {
                     return $value;
                 }
             }
@@ -158,7 +159,7 @@ class Broker
         }, $text) ?? $text;
 
         // Values that aren't one person's: [id v-…], [name v-…], [phone v-…].
-        $text = preg_replace_callback('/\[(?:name|given|family|id|phone) (v-[0-9a-f]{10})\]/', fn ($m) => Value::find($m[1]) ?? $m[0], $text) ?? $text;
+        $text = preg_replace_callback('/\[(?:name|given|family|id|email|phone) (v-[0-9a-f]{10})\]/', fn ($m) => Value::find($m[1]) ?? $m[0], $text) ?? $text;
 
         return preg_replace_callback(self::PSEUDONYM, fn ($m) => $person($m[1])?->email ?? $m[0], $text) ?? $text;
     }

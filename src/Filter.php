@@ -12,7 +12,7 @@ use TornadoEngine\Broker\Models\Person;
 class Filter
 {
     /** Pseudonyms and placeholders the filter writes; the safety net leaves them alone. */
-    public const WRITTEN = '/p-[0-9a-f]{10}@[a-z0-9-]+|\[(?:name|given|family|id|phone) (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10})\]/';
+    public const WRITTEN = '/p-[0-9a-f]{10}@[a-z0-9-]+|\[(?:name|given|family|id|email|phone) (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10})\]/';
 
     /** A value more people share than this doesn't identify anyone (for example "student" as an ID type), so it's left alone. */
     public const SHARED_LIMIT = 25;
@@ -186,7 +186,9 @@ class Filter
         foreach ($owners['email'] ?? [] as $key => $who) {
             [$value] = reset($who);
             if (count($who) === 1) {
-                $replacement = $people[array_key_first($who)]->address();
+                // Their main address becomes their pseudonym; other addresses (aliases) a placeholder that turns back into them.
+                $owner = $people[array_key_first($who)];
+                $replacement = strtolower($owner->email) === $key ? $owner->address() : '[email '.$owner->pseudonym.'-'.Value::short($key).']';
             } else {
                 $replacement = Value::token($value, 'id');
                 $shared[] = [$value, 'id'];
