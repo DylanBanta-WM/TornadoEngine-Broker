@@ -15,7 +15,7 @@ class Broker
 {
     private const PSEUDONYM = '/\b(p-[0-9a-f]{10})@([a-z0-9-]+)\b/';
 
-    private const PLACEHOLDER = '/\[(?:name|given|family|id)(?: p-[0-9a-f]{10})?\]|\[phone\]/';
+    private const PLACEHOLDER = '/\[(?:name|given|family|id|phone)(?: (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10}))?\]/';
 
     /** @var array<string, Closure(list<string>): array<string, list<array{0: string, 1: string}>>> */
     private array $sources = [];
@@ -135,17 +135,38 @@ class Broker
             return $people[$pseudonym] ??= Person::where('pseudonym', $pseudonym)->first();
         };
 
+        // One person's name parts: [name p-…], [given p-…], [family p-…].
         $text = preg_replace_callback('/\[(name|given|family) (p-[0-9a-f]{10})\]/', function ($m) use ($person) {
-            foreach (json_decode($person($m[2])?->getRawOriginal('values') ?? '[]', true) ?: [] as [$value, $label]) {
+            foreach ($person($m[2])?->values ?? [] as [$value, $label]) {
                 if ($label === $m[1]) {
                     return $value;
                 }
             }
 
             return $m[0];
-        }, $text);
+        }, $text) ?? $text;
 
-        return preg_replace_callback(self::PSEUDONYM, fn ($m) => $person($m[1])?->email ?? $m[0], $text);
+        // One person's other values: [id p-…-ab12].
+        $text = preg_replace_callback('/\[id (p-[0-9a-f]{10})-([0-9a-f]{4})\]/', function ($m) use ($person) {
+            foreach ($person($m[1])?->values ?? [] as [$value]) {
+                if (Value::short((string) $value) === $m[2]) {
+                    return $value;
+                }
+            }
+
+            return $m[0];
+        }, $text) ?? $text;
+
+        // Values that aren't one person's: [id v-…], [name v-…], [phone v-…].
+        $text = preg_replace_callback('/\[(?:name|given|family|id|phone) (v-[0-9a-f]{10})\]/', fn ($m) => Value::find($m[1]) ?? $m[0], $text) ?? $text;
+
+        return preg_replace_callback(self::PSEUDONYM, fn ($m) => $person($m[1])?->email ?? $m[0], $text) ?? $text;
+    }
+
+    /** The placeholder for a value taken out of text that isn't in the directory (a misread name, say), kept so people can see it again. */
+    public function placeholder(string $value, string $label = 'name'): string
+    {
+        return Value::placeholder($value, $label);
     }
 
     /** @param  list<string>  $command  The real command, as run. */

@@ -120,8 +120,15 @@ class BrokerTest extends TestCase
             $this->assertStringNotContainsString($value, $filtered, $value);
         }
         $this->assertStringContainsString($ann, $filtered);
-        $this->assertStringContainsString("[id {$code}]", $filtered);
-        $this->assertStringContainsString('[phone]', $filtered);
+        $this->assertStringContainsString("[id {$code}-", $filtered);
+        $this->assertMatchesRegularExpression('/\[phone v-[0-9a-f]{10}\]/', $filtered);
+
+        // Everything taken out can be put back for people.
+        $shown = app(Broker::class)->display($filtered);
+        foreach (['Ann Example', 'ann.example@school.test', '204417', '740-555-0142', '614-555-0199', 'Pat Example', 'parent.example@home.test', '9137', 'B12'] as $value) {
+            $this->assertStringContainsString($value, $shown, $value);
+        }
+        $this->assertStringNotContainsString('[', $shown);
 
         // People without a pseudonym role, and addresses nobody has, are left alone.
         $this->assertSame('Zed Quill wrote to someone@else.test', $this->filter('Zed Quill wrote to someone@else.test'));
@@ -131,7 +138,28 @@ class BrokerTest extends TestCase
     {
         $this->setUpBroker();
 
-        $this->assertSame('Hi [given]', $this->filter('Hi Ann'));
+        $filtered = $this->filter('Hi Ann');
+        $this->assertMatchesRegularExpression('/^Hi \[given v-[0-9a-f]{10}\]$/', $filtered);
+        $this->assertSame('Hi Ann', app(Broker::class)->display($filtered));
+    }
+
+    public function test_a_value_many_people_share_isnt_treated_as_identifying(): void
+    {
+        $this->setUpBroker();
+        foreach (range(1, Filter::SHARED_LIMIT + 1) as $i) {
+            Person::create(['kind' => 'student', 'email' => "s{$i}@school.test", 'pseudonym' => sprintf('p-%010x', $i), 'values' => [['student', 'externalIds']]]);
+        }
+        app(Filter::class)->forget();
+
+        $this->assertSame('All students and every student', $this->filter('All students and every student'));
+    }
+
+    public function test_values_are_only_replaced_whole(): void
+    {
+        $this->setUpBroker();
+
+        $this->assertSame('Order 2044170 and 1204417', $this->filter('Order 2044170 and 1204417'));
+        $this->assertStringNotContainsString('204417', $this->filter('Student ID204417'));
     }
 
     public function test_text_for_the_website_shows_real_people_again(): void

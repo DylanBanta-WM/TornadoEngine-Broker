@@ -12,7 +12,10 @@ use TornadoEngine\Broker\Models\Person;
 class Filter
 {
     /** Pseudonyms and placeholders the filter writes; the safety net leaves them alone. */
-    private const WRITTEN = '/p-[0-9a-f]{10}@[a-z0-9-]+|\[(?:name|given|family|id) p-[0-9a-f]{10}\]|\[(?:name|given|family|id|phone)\]/';
+    public const WRITTEN = '/p-[0-9a-f]{10}@[a-z0-9-]+|\[(?:name|given|family|id|phone) (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10})\]/';
+
+    /** A value more people share than this doesn't identify anyone (for example "student" as an ID type), so it's left alone. */
+    public const SHARED_LIMIT = 25;
 
     /** Phone numbers: (614) 555-0199, 614-555-0199, 614.555.0199, +1 614 555 0199, and international ones with a +. */
     private const PHONE = '/(?<![\w-])(?:\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w-])|(?<![\w-])\+\d[\d\s().-]{7,}\d(?![\w-])/';
@@ -36,7 +39,11 @@ class Filter
 
         $this->load();
 
-        $text = strtr($text, $this->exact);
+        // Whole values only: an ID inside a longer word or number is a different thing.
+        foreach (array_chunk($this->exact, 300, true) as $chunk) {
+            $pattern = '/'.implode('|', array_map(fn ($v) => self::whole((string) $v), array_keys($chunk))).'/u';
+            $text = preg_replace_callback($pattern, fn ($m) => $this->exact[$m[0]] ?? $m[0], $text) ?? $text;
+        }
 
         foreach (array_chunk($this->words, 300, true) as $chunk) {
             $pattern = '/(?<![\w@.-])(?:'.implode('|', array_map(fn ($w) => preg_quote($w, '/'), array_keys($chunk))).')(?![\w@-])/iu';
@@ -137,9 +144,23 @@ class Filter
         return $out.substr($text, $last);
     }
 
+    /** A value as a pattern that only matches it whole: digits not inside a longer number, letters not inside a longer word. */
+    private static function whole(string $value): string
+    {
+        $edge = fn (string $char) => match (true) {
+            ctype_digit($char) => '0-9',
+            ctype_alpha($char) => 'A-Za-z',
+            default => null,
+        };
+        $before = $edge($value[0]);
+        $after = $edge(substr($value, -1));
+
+        return ($before ? "(?<![{$before}])" : '').preg_quote($value, '/').($after ? "(?![{$after}])" : '');
+    }
+
     private function scrub(string $text): string
     {
-        return preg_replace(self::PHONE, '[phone]', $text) ?? $text;
+        return preg_replace_callback(self::PHONE, fn ($m) => Value::placeholder($m[0], 'phone'), $text) ?? $text;
     }
 
     private function load(): void
@@ -148,22 +169,56 @@ class Filter
             return;
         }
 
-        $exact = [];
-        $words = [];
-        $set = function (array &$map, string $key, string $replacement, string $shared) {
-            $map[$key] = isset($map[$key]) && $map[$key] !== $replacement ? $shared : $replacement;
-        };
-
+        // Who has each value, to tell one person's value from one many share.
+        $owners = [];
+        $people = [];
         foreach (Person::query()->select(['kind', 'email', 'pseudonym', 'values'])->cursor() as $person) {
+            $people[$person->pseudonym] = $person;
             foreach ($person->values as [$value, $label]) {
-                match ($label) {
-                    'email' => [$set($exact, $value, $person->address(), '[id]'), $set($exact, strtolower($value), $person->address(), '[id]')],
-                    'name', 'given', 'family' => $set($words, mb_strtolower($value), "[{$label} {$person->pseudonym}]", "[{$label}]"),
-                    default => $set($exact, $value, "[id {$person->pseudonym}]", '[id]'),
-                };
+                $key = in_array($label, ['name', 'given', 'family'], true) ? mb_strtolower($value) : ($label === 'email' ? strtolower($value) : $value);
+                $owners[$label === 'email' ? 'email' : (in_array($label, ['name', 'given', 'family'], true) ? 'word' : 'id')][$key][$person->pseudonym] = [$value, $label];
             }
         }
 
+        $exact = [];
+        $words = [];
+        $shared = [];
+        foreach ($owners['email'] ?? [] as $key => $who) {
+            [$value] = reset($who);
+            if (count($who) === 1) {
+                $replacement = $people[array_key_first($who)]->address();
+            } else {
+                $replacement = Value::token($value, 'id');
+                $shared[] = [$value, 'id'];
+            }
+            $exact[$value] = $replacement;
+            $exact[$key] = $replacement;
+        }
+        foreach ($owners['word'] ?? [] as $key => $who) {
+            [$value, $label] = reset($who);
+            if (count($who) === 1) {
+                $words[$key] = "[{$label} ".array_key_first($who).']';
+            } else {
+                $words[$key] = Value::token($value, $label);
+                $shared[] = [$value, $label];
+            }
+        }
+        foreach ($owners['id'] ?? [] as $key => $who) {
+            $value = (string) $key;
+            if (count($who) > self::SHARED_LIMIT || mb_strlen($value) < 3) {
+                continue;
+            }
+            if (count($who) === 1) {
+                $exact[$value] = '[id '.array_key_first($who).'-'.Value::short($value).']';
+            } else {
+                $exact[$value] = Value::token($value, 'id');
+                $shared[] = [$value, 'id'];
+            }
+        }
+        // Shared values are kept (encrypted) so their placeholders can be turned back into them.
+        Value::remember($shared);
+
+        uksort($exact, fn ($a, $b) => mb_strlen((string) $b) <=> mb_strlen((string) $a));
         uksort($words, fn ($a, $b) => mb_strlen($b) <=> mb_strlen($a));
         $this->exact = $exact;
         $this->words = $words;
