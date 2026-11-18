@@ -10,6 +10,7 @@
 @endphp
 
 <x-settings-card :title="__('Broker')" wide>
+    <p class="text-gray-600 dark:text-gray-400">{{ \TornadoEngine\Broker\Broker::about() }}</p>
     @if ($notReady)
         <p class="{{ $box }} border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200">{{ $notReady }}</p>
     @else
@@ -57,11 +58,5 @@
         </div>
     @endif
 
-    <div class="flex flex-wrap items-center justify-between gap-3">
-        <a href="{{ route('broker.log') }}" class="inline-flex min-h-11 items-center font-medium text-indigo-600 dark:text-indigo-400 underline">{{ __('What Claude ran') }}</a>
-        <form method="POST" action="{{ route('broker.refresh') }}">
-            @csrf
-            <x-primary-button>{{ __('Refresh now') }}</x-primary-button>
-        </form>
-    </div>
+    <a href="{{ route('broker.log') }}" class="inline-flex min-h-11 items-center font-medium text-indigo-600 dark:text-indigo-400 underline">{{ __('What Claude ran') }}</a>
 </x-settings-card>

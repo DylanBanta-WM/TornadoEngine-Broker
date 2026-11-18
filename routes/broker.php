@@ -15,6 +15,5 @@ Route::middleware(['web', 'auth', 'can:administration'])
     ->name('broker.')
     ->group(function () {
         Route::post('/roles', [BrokerController::class, 'roles'])->name('roles');
-        Route::post('/refresh', [BrokerController::class, 'refresh'])->name('refresh');
         Route::get('/log', [BrokerController::class, 'log'])->name('log');
     });

@@ -23,7 +23,7 @@ class Directory
     public function __construct(private Broker $broker) {}
 
     /**
-     * Everyone, from scratch (nightly, and Refresh now).
+     * Everyone, from scratch (nightly, and when the roles are saved).
      *
      * @return string A summary for the scheduled job's result.
      */

@@ -7,6 +7,7 @@ use Closure;
 use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Models\LogEntry;
 use TornadoEngine\Broker\Models\Person;
+use TornadoEngine\Cron\Cron;
 
 /**
  * Between Claude and the district's data: pseudonyms on the way out, real addresses on the way in.
@@ -56,13 +57,49 @@ class Broker
         return is_array($saved) ? array_values(array_intersect($all, $saved)) : $all;
     }
 
+    /** What the broker does, for admins. */
+    public static function about(): string
+    {
+        return __('The broker swaps the names, emails and IDs of people in the chosen roles (usually students) for pseudonyms before Claude sees anything, so their data never reaches Claude. People on this website see the real ones.');
+    }
+
+    /**
+     * Saves the roles whose people are given pseudonyms (ids that aren't roles are left out).
+     *
+     * @param  array<array-key, mixed>  $ids
+     */
+    public static function saveRoles(array $ids): void
+    {
+        $ids = array_map('intval', $ids);
+        Setting::put('broker.pseudonym_roles', json_encode(array_values(array_intersect(Role::pluck('id')->all(), $ids))));
+    }
+
+    /**
+     * Rebuilds the directory now, through its Cron job (jobs run one at a time).
+     *
+     * @return array{0: bool, 1: string} whether it worked, and what to tell the admin
+     */
+    public function refresh(): array
+    {
+        $cron = app(Cron::class);
+        $job = $cron->find('broker.refresh');
+        $ok = $cron->run($job, wait: false);
+
+        if ($ok === null) {
+            return [false, __('Another scheduled job is running. Jobs run one at a time, so try again when it finishes.')];
+        }
+        $message = (string) $cron->settings($job)->last_message;
+
+        return $ok ? [true, $message] : [false, __('The refresh failed: :reason', ['reason' => $message])];
+    }
+
     /**
      * Why the broker can't run yet, or null if it can: it needs to have loaded who gets pseudonyms.
      */
     public function notReady(): ?string
     {
         if (Setting::get('broker.refreshed_at') === null) {
-            return __('The broker hasn\'t loaded who gets pseudonyms yet. An admin clicks Refresh now on the Broker tab in Administration.');
+            return __('The broker hasn\'t loaded who gets pseudonyms yet. An admin saves the roles on the Broker tab in Administration.');
         }
 
         return null;

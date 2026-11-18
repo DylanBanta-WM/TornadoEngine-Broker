@@ -5,6 +5,7 @@ namespace TornadoEngine\Broker\Tests;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
@@ -91,10 +92,11 @@ class BrokerTest extends TestCase
         $this->assertNull(Person::where('email', 'zed.quill@school.test')->first(), 'no role, no pseudonym');
         $this->assertSame('3 people given pseudonyms.', CronJob::find('broker.refresh')->last_message);
 
-        // Only the chosen roles.
+        // Only the chosen roles: saving them refreshes the directory.
         $admin = User::factory()->create(['is_admin' => true]);
-        $this->actingAs($admin)->post('/administration/broker/roles', ['roles' => [Role::where('name', 'Student')->value('id')]]);
-        $this->refresh();
+        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles', ['roles' => [Role::where('name', 'Student')->value('id')]])
+            ->assertRedirect('/administration/broker')
+            ->assertSessionHas('broker_status', 'Saved. 2 people given pseudonyms.');
         $this->assertNull(Person::where('email', 'kim.teacher@school.test')->first());
         $this->assertSame('Kim Teacher and kim.teacher@school.test', $this->filter('Kim Teacher and kim.teacher@school.test'));
     }
@@ -226,9 +228,25 @@ class BrokerTest extends TestCase
             ->assertSee('Roles given a pseudonym')
             ->assertSee('p-…@student · 2', false)
             ->assertSee('externalIds')
+            ->assertSee(Broker::about())
+            ->assertSee('What Claude ran')
+            ->assertDontSee('Refresh now')
             ->assertDontSee('ann.example@school.test');
 
         $this->actingAs(User::factory()->create())->post('/administration/broker/roles', ['roles' => []])->assertForbidden();
+    }
+
+    public function test_saving_the_roles_says_when_the_refresh_could_not_run(): void
+    {
+        $this->setUpBroker();
+        $admin = User::factory()->create(['is_admin' => true]);
+        $turn = Cache::lock('cron:turn', 60);
+        $turn->get();
+
+        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles', ['roles' => []])
+            ->assertSessionHasErrors(['broker' => 'Saved. Another scheduled job is running. Jobs run one at a time, so try again when it finishes.']);
+        $this->assertSame([], Broker::pseudonymRoleIds());
+        $turn->release();
     }
 
     private function directoryCsv(): string
