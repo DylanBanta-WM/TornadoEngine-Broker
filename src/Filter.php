@@ -2,6 +2,7 @@
 
 namespace TornadoEngine\Broker;
 
+use Illuminate\Support\Str;
 use TornadoEngine\Broker\Models\Person;
 
 /**
@@ -63,7 +64,63 @@ class Filter
 
     public function forget(): void
     {
-        $this->exact = $this->words = null;
+        $this->exact = $this->words = $this->fuzzy = null;
+    }
+
+    /** Characters OCR mixes up, each mapped to one stand-in (and letter pairs read as one letter). */
+    private const CONFUSED = ['rn' => 'm', 'vv' => 'w', 'cl' => 'd', '0' => 'o', '1' => 'l', 'i' => 'l', '|' => 'l', '!' => 'l', '5' => 's', '$' => 's', '8' => 'b', '2' => 'z', '6' => 'g', '@' => 'a'];
+
+    /** @var array<int, list<string>>|null name parts by length, with confused characters swapped */
+    private ?array $fuzzy = null;
+
+    /**
+     * Whether a word (read by OCR, say) looks like a name part the broker knows, allowing for misreads:
+     * confused characters (0 and O, 1 and l, rn and m…) and a letter or two wrong.
+     */
+    public function resemblesName(string $word): bool
+    {
+        $word = self::confused($word);
+        $length = strlen($word);
+        if ($length < 4) {
+            return false;
+        }
+        $this->loadFuzzy();
+        $allowed = $length >= 8 ? 2 : 1;
+        for ($other = $length - $allowed; $other <= $length + $allowed; $other++) {
+            foreach ($this->fuzzy[$other] ?? [] as $name) {
+                if (levenshtein($word, $name) <= ($length <= 4 ? 0 : $allowed)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static function confused(string $text): string
+    {
+        $text = mb_strtolower(Str::ascii($text));
+        $text = preg_replace('/[^a-z0-9|!$@]/', '', $text) ?? '';
+
+        return strtr($text, self::CONFUSED);
+    }
+
+    private function loadFuzzy(): void
+    {
+        if ($this->fuzzy !== null) {
+            return;
+        }
+        $this->load();
+        $fuzzy = [];
+        foreach (array_keys($this->words) as $name) {
+            foreach (preg_split('/[\s\-\']+/u', $name) as $part) {
+                $part = self::confused($part);
+                if (strlen($part) >= 4) {
+                    $fuzzy[strlen($part)][$part] = $part;
+                }
+            }
+        }
+        $this->fuzzy = array_map('array_values', $fuzzy);
     }
 
     private function safetyNet(string $text): string

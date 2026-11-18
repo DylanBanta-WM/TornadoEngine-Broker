@@ -268,4 +268,16 @@ class BrokerTest extends TestCase
         $late->update(['name' => 'Renamed Personson']);
         $this->assertStringNotContainsString('Personson', $filter->apply('Renamed Personson'));
     }
+
+    public function test_words_that_look_like_known_names_despite_misreads(): void
+    {
+        $this->setUpBroker();
+        $broker = app(Broker::class);
+        foreach (['EXAMPLE', 'EXAMP1E', 'Exarnple', 'Ex@mple', 'Exumple'] as $word) {
+            $this->assertTrue($broker->resemblesName($word), $word);
+        }
+        foreach (['Sample', 'Ann', 'Quill', 'Simple', 'Bus'] as $word) {
+            $this->assertFalse($broker->resemblesName($word), $word);
+        }
+    }
 }

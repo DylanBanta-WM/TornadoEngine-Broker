@@ -92,6 +92,15 @@ class Broker
     }
 
     /**
+     * Whether a word looks like a name the broker knows, allowing for misreads (OCR): 0 for O, rn for m,
+     * a letter or two wrong. For catching what filter() misses in text read from images.
+     */
+    public function resemblesName(string $word): bool
+    {
+        return $this->filter->resemblesName($word);
+    }
+
+    /**
      * Swaps pseudonyms in Claude's arguments for the real addresses.
      *
      * @param  list<string>  $args
