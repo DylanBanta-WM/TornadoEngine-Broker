@@ -181,8 +181,8 @@ class Filter
             return;
         }
         // Built once per change to the directory (a refresh, or people added or renamed), not on every request.
-        $key = 'broker.filter.'.md5(Setting::get('broker.refreshed_at').'|'.Setting::get('broker.signature').'|'.Person::max('updated_at').'|'.Person::count());
-        if (is_array($cached = Cache::get($key))) {
+        $cacheKey = 'broker.filter.'.md5(Setting::get('broker.refreshed_at').'|'.Setting::get('broker.signature').'|'.Person::max('updated_at').'|'.Person::count());
+        if (is_array($cached = Cache::get($cacheKey))) {
             [$this->exact, $this->words] = $cached;
 
             return;
@@ -264,6 +264,6 @@ class Filter
         uksort($words, fn ($a, $b) => mb_strlen($b) <=> mb_strlen($a));
         $this->exact = $exact;
         $this->words = $words;
-        Cache::put($key, [$exact, $words], now()->addDay());
+        Cache::put($cacheKey, [$exact, $words], now()->addDay());
     }
 }

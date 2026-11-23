@@ -355,4 +355,16 @@ class BrokerTest extends TestCase
         $this->assertSame("[given {$will}] was absent. [family {$will}] too. [given {$will}]", $this->filter('Will was absent. KING too. WILL'));
         $this->assertSame("Hi [name {$will}] and [name {$will}]", $this->filter('Hi will king and WILL KING'), 'full names in any case');
     }
+
+    public function test_the_name_list_is_cached_until_the_directory_changes(): void
+    {
+        $this->setUpBroker();
+        app(Filter::class)->forget();
+        $this->filter('warm up');
+
+        \DB::enableQueryLog();
+        app(Filter::class)->forget();
+        $this->filter('again');
+        $this->assertEmpty(array_filter(\DB::getQueryLog(), fn ($q) => str_contains($q['query'], 'from `broker_people`') && ! str_contains($q['query'], 'max(') && ! str_contains($q['query'], 'count(')), 'read from the cache');
+    }
 }
