@@ -11,14 +11,17 @@ use TornadoEngine\Access\Models\Role;
 use TornadoEngine\Broker\Models\Person;
 
 /**
- * Who is given a pseudonym: everyone with an account in one of the broker's pseudonym roles.
- * Their names and emails come from Access; other identifying values from sources modules add
- * (GAM, Active Directory, Entra ID).
+ * Who is given a pseudonym: everyone. Every account on the website, and everyone the directories
+ * modules add as sources know (GAM for Google, Active Directory, Entra ID), with every value that
+ * identifies them. Their pseudonym says their role on the website (p-…@student), or p-…@person.
  */
 class Directory
 {
     /** Shortest value worth replacing; shorter ones (like "Al") would replace parts of ordinary words. */
     private const MIN_LENGTH = 3;
+
+    /** The pseudonym's ending for someone with no role on the website (only in a directory, say). */
+    private const NO_ROLE = 'person';
 
     public function __construct(private Broker $broker) {}
 
@@ -30,7 +33,7 @@ class Directory
     public function refresh(): string
     {
         [$roleOf, $users] = $this->current();
-        [$people, $report, $failed] = $this->build($users, $roleOf);
+        [$people, $report, $failed] = $this->build($users, $roleOf, everyone: true);
 
         DB::transaction(function () use ($people) {
             Person::whereNotIn('email', array_keys($people))->delete();
@@ -64,7 +67,7 @@ class Directory
             $person = $known->get(strtolower($user->email));
             $values = is_string($person?->values) ? $person->values : json_encode($person?->values);
 
-            return ! $person || $person->kind !== Pseudonym::slug($roleOf[$user->id])
+            return ! $person || $person->kind !== Pseudonym::slug($roleOf[$user->id] ?? self::NO_ROLE)
                 || (mb_strlen((string) $user->name) >= self::MIN_LENGTH && ! str_contains((string) $values, json_encode((string) $user->name)));
         });
         if ($changed->isNotEmpty()) {
@@ -75,43 +78,52 @@ class Directory
         Setting::put('broker.signature', $signature);
     }
 
-    /** Changes when anyone is added, renamed, or given or losing a pseudonym role. */
+    /** Changes when anyone is added or renamed, or their roles change. */
     private function signature(): string
     {
-        $pivot = DB::table('access_role_user')->whereIn('role_id', Broker::pseudonymRoleIds())
-            ->selectRaw('count(*) as total, coalesce(sum(user_id * 1000003 + role_id), 0) as mix')->first();
+        $pivot = DB::table('access_role_user')->selectRaw('count(*) as total, coalesce(sum(user_id * 1000003 + role_id), 0) as mix')->first();
         $users = DB::table('users')->selectRaw('count(*) as total, max(updated_at) as latest, coalesce(sum(length(name) * 7 + length(email)), 0) as lengths')->first();
+        $roles = DB::table('access_roles')->selectRaw('count(*) as total, coalesce(sum(length(name)), 0) as lengths')->first();
 
-        return implode('|', [$pivot->total, $pivot->mix, $users->total, $users->latest, $users->lengths, implode(',', Broker::pseudonymRoleIds())]);
+        return implode('|', [$pivot->total, $pivot->mix, $users->total, $users->latest, $users->lengths, $roles->total, $roles->lengths]);
     }
 
-    /** @return array{0: array<int, string>, 1: Collection<int, User>} who has a pseudonym role, and which names it */
+    /** @return array{0: array<int, string>, 1: Collection<int, User>} everyone with an account, and the role that names their pseudonym */
     private function current(): array
     {
-        $roles = Role::whereIn('id', Broker::pseudonymRoleIds())->orderBy('name')->get();
+        $roles = Role::pluck('name', 'id');
         $roleOf = [];
-        foreach (DB::table('access_role_user')->whereIn('role_id', $roles->pluck('id'))->get() as $row) {
-            $name = $roles->firstWhere('id', $row->role_id)->name;
-            // The first pseudonym role alphabetically names the pseudonym.
-            if (! isset($roleOf[$row->user_id]) || strcasecmp($name, $roleOf[$row->user_id]) < 0) {
+        foreach (DB::table('access_role_user')->get() as $row) {
+            $name = $roles[$row->role_id] ?? null;
+            // The first of their roles alphabetically names the pseudonym.
+            if ($name !== null && (! isset($roleOf[$row->user_id]) || strcasecmp($name, $roleOf[$row->user_id]) < 0)) {
                 $roleOf[$row->user_id] = $name;
             }
         }
 
-        return [$roleOf, User::whereIn('id', array_keys($roleOf))->get(['id', 'name', 'email', 'updated_at'])];
+        return [$roleOf, User::get(['id', 'name', 'email', 'updated_at'])];
     }
 
-    /** @return array{0: array<string, array>, 1: array<string, int>, 2: list<string>} people's rows, the report, failed sources */
-    private function build($users, array $roleOf): array
+    /**
+     * @param  bool  $everyone  also everyone the sources know who has no account (the full refresh)
+     * @return array{0: array<string, array>, 1: array<string, int>, 2: list<string>} people's rows, the report, failed sources
+     */
+    private function build($users, array $roleOf, bool $everyone = false): array
     {
         $emails = $users->pluck('email')->map(fn ($email) => strtolower($email))->values()->all();
 
-        // What else identifies them, from each source; a source that fails is skipped (and reported).
+        // What identifies people, from each source: everyone it knows (null), or these people. A source that
+        // fails is skipped (and reported); one made before sources were asked for everyone is asked for these people.
         $extra = [];
         $failed = [];
-        foreach ($emails ? $this->broker->sources() : [] as $source => $values) {
+        foreach ($this->broker->sources() as $source => $values) {
             try {
-                foreach ($values($emails) as $email => $list) {
+                try {
+                    $found = $values($everyone ? null : $emails);
+                } catch (\TypeError) {
+                    $found = $values($emails);
+                }
+                foreach ($found as $email => $list) {
                     $extra[strtolower($email)] = array_merge($extra[strtolower($email)] ?? [], $list);
                 }
             } catch (Throwable $e) {
@@ -120,15 +132,25 @@ class Directory
             }
         }
 
+        // Accounts on the website, then people only the directories know.
+        $people = $users->mapWithKeys(fn (User $user) => [strtolower($user->email) => ['name' => (string) $user->name, 'kind' => $roleOf[$user->id] ?? self::NO_ROLE]])->all();
+        if ($everyone) {
+            foreach (array_keys($extra) as $email) {
+                $people[$email] ??= ['name' => '', 'kind' => self::NO_ROLE];
+            }
+        }
+
         $report = [];
-        $people = [];
-        foreach ($users as $user) {
-            $email = strtolower($user->email);
-            $values = [[$email, 'email'], [(string) $user->name, 'name']];
-            $parts = preg_split('/\s+/', trim((string) $user->name));
-            if (count($parts) > 1) {
-                $values[] = [$parts[0], 'given'];
-                $values[] = [end($parts), 'family'];
+        $rows = [];
+        foreach ($people as $email => $person) {
+            $values = [[$email, 'email']];
+            if ($person['name'] !== '') {
+                $values[] = [$person['name'], 'name'];
+                $parts = preg_split('/\s+/', trim($person['name']));
+                if (count($parts) > 1) {
+                    $values[] = [$parts[0], 'given'];
+                    $values[] = [end($parts), 'family'];
+                }
             }
             foreach ($extra[$email] ?? [] as [$value, $label]) {
                 $values[] = [trim((string) $value), $label];
@@ -138,10 +160,10 @@ class Directory
             }
             $values = array_values(array_unique(array_filter($values, fn ($v) => mb_strlen($v[0]) >= self::MIN_LENGTH), SORT_REGULAR));
 
-            $people[$email] = ['kind' => Pseudonym::slug($roleOf[$user->id]), 'email' => $email, 'pseudonym' => Pseudonym::for($email), 'values' => json_encode($values)];
+            $rows[$email] = ['kind' => Pseudonym::slug($person['kind']), 'email' => $email, 'pseudonym' => Pseudonym::for($email), 'values' => json_encode($values)];
         }
 
-        return [$people, $report, $failed];
+        return [$rows, $report, $failed];
     }
 
     private function save(array $people): void

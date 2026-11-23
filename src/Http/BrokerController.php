@@ -12,14 +12,12 @@ use TornadoEngine\Broker\Models\LogEntry;
 class BrokerController extends Controller
 {
     /** The roles whose people are given pseudonyms; saving refreshes the directory. */
+    /** Loads the directory now (normally overnight, and as people are added). */
     public function roles(Request $request, Broker $broker): RedirectResponse
     {
-        Broker::saveRoles((array) $request->input('roles', []));
         [$ok, $message] = $broker->refresh();
 
-        return $ok
-            ? back()->with('broker_status', __('Saved. :summary', ['summary' => $message]))
-            : back()->withErrors(['broker' => __('Saved. :reason', ['reason' => $message])]);
+        return $ok ? back()->with('broker_status', $message) : back()->withErrors(['broker' => $message]);
     }
 
     public function log(): View

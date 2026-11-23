@@ -18,7 +18,7 @@ class Broker
 
     private const PLACEHOLDER = '/\[(?:name|given|family|id|email|phone)(?: (?:p-[0-9a-f]{10}(?:-[0-9a-f]{4})?|v-[0-9a-f]{10}))?\]/';
 
-    /** @var array<string, Closure(list<string>): array<string, list<array{0: string, 1: string}>>> */
+    /** @var array<string, Closure(?list<string>): array<string, list<array{0: string, 1: string}>>> */
     private array $sources = [];
 
     public function __construct(private Filter $filter) {}
@@ -26,10 +26,11 @@ class Broker
     /**
      * Adds a place the broker learns what identifies people, for example GAM (Google):
      *
-     *     $broker->source('google', fn (array $emails) => ['ann@school.org' => [['Ann Lee', 'name'], ['12345', 'externalIds']]]);
+     *     $broker->source('google', fn (?array $emails) => ['ann@school.org' => [['Ann Lee', 'name'], ['12345', 'externalIds']]]);
      *
-     * It gets the emails of everyone given a pseudonym and returns the values to replace, with a
-     * label each (name, given and family are matched as words; anything else exactly).
+     * It gets null, meaning everyone the source knows (the full refresh), or a list of emails (people just
+     * added on the website), and returns the values to replace by email, with a label each (name, given
+     * and family are matched as words; anything else exactly). Everyone it returns is given a pseudonym.
      */
     public function source(string $name, Closure $values): static
     {
@@ -60,7 +61,7 @@ class Broker
     /** What the broker does, for admins. */
     public static function about(): string
     {
-        return __('The broker swaps the names, emails and IDs of people in the chosen roles (usually students) for pseudonyms before Claude sees anything, so their data never reaches Claude. People on this website see the real ones.');
+        return __('The broker swaps the names, emails and IDs of everyone in your directories, students and staff alike, for pseudonyms before Claude sees anything, so their data never reaches Claude. People on this website see the real ones.');
     }
 
     /**
@@ -99,7 +100,7 @@ class Broker
     public function notReady(): ?string
     {
         if (Setting::get('broker.refreshed_at') === null) {
-            return __('The broker hasn\'t loaded who gets pseudonyms yet. An admin saves the roles on the Broker tab in Administration.');
+            return __('The broker hasn\'t loaded the directory yet. An admin loads it on the Broker tab in Administration.');
         }
 
         return null;

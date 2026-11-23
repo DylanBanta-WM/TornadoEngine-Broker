@@ -83,22 +83,16 @@ class BrokerTest extends TestCase
         $this->assertSame([], $this->ran);
     }
 
-    public function test_people_in_pseudonym_roles_are_given_pseudonyms_named_after_their_role(): void
+    public function test_everyone_is_given_a_pseudonym_named_after_their_role(): void
     {
         $this->setUpBroker();
 
         $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@student$/', $this->address('ann.example@school.test'));
         $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@staff$/', $this->address('kim.teacher@school.test'));
-        $this->assertNull(Person::where('email', 'zed.quill@school.test')->first(), 'no role, no pseudonym');
-        $this->assertSame('3 people given pseudonyms.', CronJob::find('broker.refresh')->last_message);
-
-        // Only the chosen roles: saving them refreshes the directory.
-        $admin = User::factory()->create(['is_admin' => true]);
-        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles', ['roles' => [Role::where('name', 'Student')->value('id')]])
-            ->assertRedirect('/administration/broker')
-            ->assertSessionHas('broker_status', 'Saved. 2 people given pseudonyms.');
-        $this->assertNull(Person::where('email', 'kim.teacher@school.test')->first());
-        $this->assertSame('Kim Teacher and kim.teacher@school.test', $this->filter('Kim Teacher and kim.teacher@school.test'));
+        $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@person$/', $this->address('zed.quill@school.test'), 'no role');
+        $this->assertMatchesRegularExpression('/^p-[0-9a-f]{10}@person$/', $this->address('wm30lost@school.test'), 'only in Google');
+        $this->assertSame('5 people given pseudonyms.', CronJob::find('broker.refresh')->last_message);
+        $this->assertStringNotContainsString('Kim Teacher', $this->filter('Kim Teacher and kim.teacher@school.test'));
     }
 
     public function test_role_names_with_spaces_and_symbols_make_safe_pseudonyms(): void
@@ -132,8 +126,8 @@ class BrokerTest extends TestCase
         }
         $this->assertStringNotContainsString('[', $shown);
 
-        // People without a pseudonym role, and addresses nobody has, are left alone.
-        $this->assertSame('Zed Quill wrote to someone@else.test', $this->filter('Zed Quill wrote to someone@else.test'));
+        // Everyone in the directories, even without a role; addresses nobody has are left alone.
+        $this->assertSame('[name '.Pseudonym::for('zed.quill@school.test').'] wrote to someone@else.test', $this->filter('Zed Quill wrote to someone@else.test'));
     }
 
     public function test_a_given_name_shared_by_two_people_is_replaced_without_saying_who(): void
@@ -202,7 +196,7 @@ class BrokerTest extends TestCase
     {
         $this->setUpBroker();
 
-        BrokerServer::tool(BrokerInfoTool::class)->assertSee('Ready: yes')->assertSee('2 @student')->assertSee('1 @staff')->assertDontSee('ann.example');
+        BrokerServer::tool(BrokerInfoTool::class)->assertSee('Ready: yes')->assertSee('2 @student')->assertSee('1 @staff')->assertSee('2 @person')->assertDontSee('ann.example');
     }
 
     public function test_pages_claude_opens_show_pseudonyms(): void
@@ -218,35 +212,39 @@ class BrokerTest extends TestCase
         $this->withServerVariables([])->actingAs(User::factory()->create())->get('/test-roster')->assertSee('Ann Example');
     }
 
-    public function test_admins_choose_the_roles_and_see_counts_only(): void
+    public function test_admins_see_counts_only(): void
     {
         $this->setUpBroker();
         $admin = User::factory()->create(['is_admin' => true]);
 
         $this->actingAs($admin)->get('/administration/broker')
             ->assertOk()
-            ->assertSee('Roles given a pseudonym')
+            ->assertDontSee('Roles given a pseudonym')
+            ->assertDontSee('Load now')
             ->assertSee('p-…@student · 2', false)
+            ->assertSee('p-…@person · 2', false)
             ->assertSee('externalIds')
             ->assertSee(Broker::about())
             ->assertSee('What Claude ran')
             ->assertDontSee('Refresh now')
             ->assertDontSee('ann.example@school.test');
 
-        $this->actingAs(User::factory()->create())->post('/administration/broker/roles', ['roles' => []])->assertForbidden();
+        $this->actingAs(User::factory()->create())->post('/administration/broker/roles')->assertForbidden();
     }
 
-    public function test_saving_the_roles_says_when_the_refresh_could_not_run(): void
+    public function test_before_its_first_load_admins_can_load_it_and_hear_when_it_could_not_run(): void
     {
-        $this->setUpBroker();
         $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin)->get('/administration/broker')->assertSee('Load now');
+
         $turn = Cache::lock('cron:turn', 60);
         $turn->get();
-
-        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles', ['roles' => []])
-            ->assertSessionHasErrors(['broker' => 'Saved. Another scheduled job is running. Jobs run one at a time, so try again when it finishes.']);
-        $this->assertSame([], Broker::pseudonymRoleIds());
+        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles')
+            ->assertSessionHasErrors(['broker' => 'Another scheduled job is running. Jobs run one at a time, so try again when it finishes.']);
         $turn->release();
+
+        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles')->assertSessionHas('broker_status');
+        $this->assertTrue(app(Broker::class)->ready());
     }
 
     private function directoryCsv(): string
@@ -322,12 +320,12 @@ class BrokerTest extends TestCase
         foreach (['EXAMPLE', 'EXAMP1E', 'Exarnple', 'Ex@mple', 'Exumple'] as $word) {
             $this->assertTrue($broker->resemblesName($word), $word);
         }
-        foreach (['Sample', 'Ann', 'Quill', 'Simple', 'Bus'] as $word) {
+        foreach (['Sample', 'Ann', 'Quiet', 'Simple', 'Bus'] as $word) {
             $this->assertFalse($broker->resemblesName($word), $word);
         }
     }
 
-    public function test_a_name_part_shared_with_someone_without_a_pseudonym_points_at_no_one(): void
+    public function test_a_name_part_two_people_share_points_at_no_one(): void
     {
         $student = Role::where('name', 'Student')->first();
         User::factory()->create(['email' => 'dylan.monday@school.test', 'name' => 'Dylan Monday'])->roles()->attach($student);
@@ -336,8 +334,12 @@ class BrokerTest extends TestCase
         $this->setUpBroker();
         $monday = Pseudonym::for('dylan.monday@school.test');
 
+        $banta = Pseudonym::for('dylan.banta@school.test');
+
+        // Staff are pseudonyms too, so nothing tells Claude which Dylan is the student.
         $this->assertSame('[name '.$monday.']', $this->filter('Dylan Monday'));
-        $this->assertMatchesRegularExpression('/^Reset \[given v-[0-9a-f]{10}\] Banta\'s password$/', $this->filter("Reset Dylan Banta's password"), 'not the student named Dylan');
+        $this->assertSame("Reset [name {$banta}]'s password", $this->filter("Reset Dylan Banta's password"));
+        $this->assertMatchesRegularExpression('/^\[given v-[0-9a-f]{10}\] was here$/', $this->filter('Dylan was here'), 'two Dylans');
         $this->assertSame('Reset Dylan Banta\'s password', app(Broker::class)->display($this->filter("Reset Dylan Banta's password")));
         $this->assertSame('[given '.Pseudonym::for('rowan.solo@school.test').']', $this->filter('Rowan'), 'a name only one person has');
     }
