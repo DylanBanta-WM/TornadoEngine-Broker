@@ -2,7 +2,9 @@
 
 namespace TornadoEngine\Broker;
 
+use App\Models\Setting;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use TornadoEngine\Broker\Models\Person;
 
@@ -178,6 +180,13 @@ class Filter
         if ($this->exact !== null) {
             return;
         }
+        // Built once per change to the directory (a refresh, or people added or renamed), not on every request.
+        $key = 'broker.filter.'.md5(Setting::get('broker.refreshed_at').'|'.Setting::get('broker.signature').'|'.Person::max('updated_at').'|'.Person::count());
+        if (is_array($cached = Cache::get($key))) {
+            [$this->exact, $this->words] = $cached;
+
+            return;
+        }
 
         // Who has each value, to tell one person's value from one many share.
         $owners = [];
@@ -255,5 +264,6 @@ class Filter
         uksort($words, fn ($a, $b) => mb_strlen($b) <=> mb_strlen($a));
         $this->exact = $exact;
         $this->words = $words;
+        Cache::put($key, [$exact, $words], now()->addDay());
     }
 }
