@@ -2,6 +2,7 @@
 
 namespace TornadoEngine\Broker;
 
+use App\Models\User;
 use Illuminate\Support\Str;
 use TornadoEngine\Broker\Models\Person;
 
@@ -23,7 +24,7 @@ class Filter
     /** @var array<string, string>|null exact value => replacement */
     private ?array $exact = null;
 
-    /** @var array<string, string>|null lower-case name (full, given or family) => replacement, matched as whole words in any case */
+    /** @var array<string, string>|null lower-case name (full, given or family) => replacement, matched as whole words (a given or family name only capitalized) */
     private ?array $words = null;
 
     public function apply(string $text, bool $sync = true): string
@@ -47,7 +48,16 @@ class Filter
 
         foreach (array_chunk($this->words, 300, true) as $chunk) {
             $pattern = '/(?<![\w@.-])(?:'.implode('|', array_map(fn ($w) => preg_quote($w, '/'), array_keys($chunk))).')(?![\w@-])/iu';
-            $text = preg_replace_callback($pattern, fn ($m) => $this->words[mb_strtolower($m[0])] ?? $m[0], $text) ?? $text;
+            $text = preg_replace_callback($pattern, function ($m) {
+                $replacement = $this->words[mb_strtolower($m[0])] ?? null;
+                // A first or last name on its own only when it starts with a capital letter, so names that are
+                // also words (Will, May, Grace, King) leave "will", "may" and "king" alone. Full names: any case.
+                if ($replacement === null || (! str_starts_with($replacement, '[name ') && mb_strtoupper(mb_substr($m[0], 0, 1)) !== mb_substr($m[0], 0, 1))) {
+                    return $m[0];
+                }
+
+                return $replacement;
+            }, $text) ?? $text;
         }
 
         return $this->safetyNet($text);
@@ -180,6 +190,24 @@ class Filter
             }
         }
 
+        // Names of people who aren't given a pseudonym (staff, say). A name part one of them shares with someone who is
+        // gets the shared placeholder, so "Dylan" in "Dylan Banta" (staff) isn't taken for the one student named Dylan.
+        $others = [];
+        $known = [];
+        foreach ($people as $person) {
+            $known[strtolower($person->email)] = true;
+        }
+        foreach (User::query()->select(['name', 'email'])->cursor() as $user) {
+            if (isset($known[strtolower((string) $user->email)]) || trim((string) $user->name) === '') {
+                continue;
+            }
+            $name = mb_strtolower(trim((string) $user->name));
+            $others[$name] = true;
+            foreach (preg_split('/\s+/u', $name) as $part) {
+                $others[$part] = true;
+            }
+        }
+
         $exact = [];
         $words = [];
         $shared = [];
@@ -198,7 +226,7 @@ class Filter
         }
         foreach ($owners['word'] ?? [] as $key => $who) {
             [$value, $label] = reset($who);
-            if (count($who) === 1) {
+            if (count($who) === 1 && ! isset($others[$key])) {
                 // Someone with two values for one part (a hyphenated family name and a short one) gets a code for each.
                 $owner = $people[array_key_first($who)];
                 $several = count(array_unique(array_map(fn ($v) => mb_strtolower($v[0]), array_filter($owner->values, fn ($v) => $v[1] === $label)))) > 1;

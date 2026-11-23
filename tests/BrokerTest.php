@@ -326,4 +326,31 @@ class BrokerTest extends TestCase
             $this->assertFalse($broker->resemblesName($word), $word);
         }
     }
+
+    public function test_a_name_part_shared_with_someone_without_a_pseudonym_points_at_no_one(): void
+    {
+        $student = Role::where('name', 'Student')->first();
+        User::factory()->create(['email' => 'dylan.monday@school.test', 'name' => 'Dylan Monday'])->roles()->attach($student);
+        User::factory()->create(['email' => 'dylan.banta@school.test', 'name' => 'Dylan Banta']); // staff, no pseudonym
+        User::factory()->create(['email' => 'rowan.solo@school.test', 'name' => 'Rowan Solo'])->roles()->attach($student);
+        $this->setUpBroker();
+        $monday = Pseudonym::for('dylan.monday@school.test');
+
+        $this->assertSame('[name '.$monday.']', $this->filter('Dylan Monday'));
+        $this->assertMatchesRegularExpression('/^Reset \[given v-[0-9a-f]{10}\] Banta\'s password$/', $this->filter("Reset Dylan Banta's password"), 'not the student named Dylan');
+        $this->assertSame('Reset Dylan Banta\'s password', app(Broker::class)->display($this->filter("Reset Dylan Banta's password")));
+        $this->assertSame('[given '.Pseudonym::for('rowan.solo@school.test').']', $this->filter('Rowan'), 'a name only one person has');
+    }
+
+    public function test_a_first_or_last_name_alone_only_counts_when_capitalized(): void
+    {
+        $student = Role::where('name', 'Student')->first();
+        User::factory()->create(['email' => 'will.king@school.test', 'name' => 'Will King'])->roles()->attach($student);
+        $this->setUpBroker();
+        $will = Pseudonym::for('will.king@school.test');
+
+        $this->assertSame('I will check the king report', $this->filter('I will check the king report'));
+        $this->assertSame("[given {$will}] was absent. [family {$will}] too. [given {$will}]", $this->filter('Will was absent. KING too. WILL'));
+        $this->assertSame("Hi [name {$will}] and [name {$will}]", $this->filter('Hi will king and WILL KING'), 'full names in any case');
+    }
 }
