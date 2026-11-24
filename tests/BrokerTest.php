@@ -217,7 +217,7 @@ class BrokerTest extends TestCase
         $this->setUpBroker();
         $admin = User::factory()->create(['is_admin' => true]);
 
-        $this->actingAs($admin)->get('/administration/broker')
+        $this->actingAs($admin)->get('/settings/broker')
             ->assertOk()
             ->assertDontSee('Roles given a pseudonym')
             ->assertDontSee('Load now')
@@ -235,15 +235,15 @@ class BrokerTest extends TestCase
     public function test_before_its_first_load_admins_can_load_it_and_hear_when_it_could_not_run(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
-        $this->actingAs($admin)->get('/administration/broker')->assertSee('Load now');
+        $this->actingAs($admin)->get('/settings/broker')->assertSee('Load now');
 
         $turn = Cache::lock('cron:turn', 60);
         $turn->get();
-        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles')
+        $this->actingAs($admin)->from('/settings/broker')->post('/administration/broker/roles')
             ->assertSessionHasErrors(['broker' => 'Another scheduled job is running. Jobs run one at a time, so try again when it finishes.']);
         $turn->release();
 
-        $this->actingAs($admin)->from('/administration/broker')->post('/administration/broker/roles')->assertSessionHas('broker_status');
+        $this->actingAs($admin)->from('/settings/broker')->post('/administration/broker/roles')->assertSessionHas('broker_status');
         $this->assertTrue(app(Broker::class)->ready());
     }
 
